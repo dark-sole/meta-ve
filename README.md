@@ -2,7 +2,7 @@
 
 **Autonomous Vote-Escrow Liquidity Layer for Aerodrome**
 
-META-VE wraps veAERO into liquid, composable tokens while maintaining full voting power. The protocol operates autonomously with no active treasury management.
+META-VE wraps veAERO into liquid, composable tokens while maintaining full voting power. The protocol operates autonomously with no active treasury management—all asset flows are handled programmatically through smart contracts.
 
 ---
 
@@ -31,8 +31,8 @@ META-VE wraps veAERO into liquid, composable tokens while maintaining full votin
 │                          VeAeroSplitter                                  │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
 │  │ DEPOSIT SPLIT                                                     │   │
-│  │   V-AERO: 90% user │ 1% treasury │ 9% META contract              │   │
-│  │   C-AERO: 99% user │ 1% treasury                                 │   │
+│  │   V-AERO: 90% user │ 1% Tokenisys │ 9% META contract             │   │
+│  │   C-AERO: 99% user │ 1% Tokenisys                                │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
 │  │ FEE SPLIT (Trading Fees)                                         │   │
@@ -48,118 +48,129 @@ META-VE wraps veAERO into liquid, composable tokens while maintaining full votin
 │    V-AERO       │    │    C-AERO       │    │      META       │
 │  Voting Token   │    │  Capital Token  │    │   Governance    │
 ├─────────────────┤    ├─────────────────┤    ├─────────────────┤
-│ • Gauge voting  │    │ • Fee claims    │    │ • Stake & vote  │
-│ • Passive vote  │    │ • META rewards  │    │ • Emissions     │
+│ • Gauge voting  │    │ • 50% AERO fees │    │ • Stake & vote  │
+│ • Passive vote  │    │ • META rewards  │    │ • Dual rewards  │
 │ • Bribe claims  │    │ • Transferable  │    │ • LP incentives │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
 ---
 
-## Token Overview
+## The VE Split Mechanism
+
+When a user deposits a veAERO NFT, the protocol mints two separate tokens representing the decomposed rights:
 
 ### V-AERO (Voting Token)
-Represents the voting power from deposited veAERO NFTs.
-
-- **Gauge Voting:** Direct voting power to specific Aerodrome pools
-- **Passive Voting:** Follow the collective vote proportionally
-- **Bribe Claims:** Earn bribes from voted pools
-- **Locked While Voting:** Tokens lock until epoch end when used to vote
+- Represents voting power for gauge direction
+- Non-transferable while locked for voting
+- Used for gauge voting, passive voting, and liquidation confirmation
 
 ### C-AERO (Capital Token)
-Represents economic rights to trading fees and protocol incentives.
+- Represents economic rights to trading fees
+- Fully transferable (ERC-20)
+- Receives 50% of trading fees plus META incentives from VE pool allocations
 
-- **Fee Revenue:** 50% of trading fees (paid in AERO)
-- **META Rewards:** Proportional share of S/2 emission allocation
-- **Fully Transferable:** Standard ERC-20, tradeable and composable
+### Deposit Split Distribution
 
-### META (Governance Token)
-Protocol governance and yield token with dynamic emission mechanics.
+| Recipient | V-AERO | C-AERO | Purpose |
+|-----------|--------|--------|---------|
+| User | 90% | 99% | Primary owner |
+| Tokenisys | 1% | 1% | IP fee |
+| META Contract | 9% | — | Protocol voting power |
 
-- **1B Maximum Supply:** Fixed cap, no additional minting beyond emissions
-- **DeltaForce Emissions:** Logistic decay curve modulated by staking ratio
-- **Dual Rewards:** Stakers earn both META emissions and AERO fees
-- **Vote Direction:** Stakers vote to allocate emissions to VE pools
-
-### R-AERO (Redemption Token)
-Issued during protocol liquidation for claims on underlying veAERO NFTs.
+The 9% V-AERO accumulated in META functions as the protocol's governance flywheel, voted 50% passively (following the collective) and 50% for the META-AERO liquidity pool.
 
 ---
 
 ## DeltaForce Emission Model
 
-META does not use simple linear or fixed annual decay. Instead, it implements a **logistic decay curve** that responds to staking participation.
+META emissions follow a decay curve called **DeltaForce**, which modulates the emission rate based on staking participation.
 
 ### Core Formula
 
 ```
-Daily Emission = P × (1 - P) × K × U
+Daily Emission (I) = P × (1 - P) × K × U
 
 Where:
-  P = Progress factor (percentage of max supply minted)
-  K = Issuance constant (controls emission speed)
+  P = Progress factor (percentage of max supply minted, ∈ [0,1])
+  K = Pre-calculated constant controlling issuance speed
   U = Utilisation factor = 4 × S × (1 - S)
   S = Staking ratio (staked META / circulating META)
 ```
 
-### Utilisation Dynamics
+### The Utilisation Function
 
-The U factor creates a parabolic relationship with staking:
+The U factor creates a parabolic relationship with staking ratio S:
 
-| Staking Ratio (S) | Utilisation (U) | Emission Level |
-|-------------------|-----------------|----------------|
+| Staking Ratio (S) | Utilisation (U) | Emission Impact |
+|-------------------|-----------------|-----------------|
 | 0% | 0 | No emissions |
-| 25% | 0.75 | 75% of max |
-| 50% | 1.00 | **Maximum** |
-| 75% | 0.75 | 75% of max |
+| 25% | 0.75 | 75% of maximum |
+| **50%** | **1.00** | **Maximum rate** |
+| 75% | 0.75 | 75% of maximum |
 | 100% | 0 | No emissions |
 
-This creates a **self-balancing equilibrium** around S = 50%:
-- Too few stakers → emissions slow → staking becomes more attractive
-- Too many stakers → emissions slow → selling becomes more attractive
+### Economic Rationale
+
+The parabolic utilisation curve:
+- **Protects bootstrapping:** When S = 0, no emissions; tokens are not wasted
+- **Targets equilibrium:** Maximum emissions at S = 50% encourage balance
+- **Discourages hoarding:** As S → 1, emissions decline
+- **Self-regulates:** System tends toward interior equilibrium without intervention
 
 ### Emission Distribution
 
-| Recipient | Share | Formula |
-|-----------|-------|---------|
+Once minted, emissions are allocated via fixed fractions:
+
+| Recipient | Percentage | Formula |
+|-----------|------------|---------|
 | Treasury | 5% | Fixed |
 | META Stakers | Variable | (1 - S) × 95% |
 | VE Pools (C-AERO) | Variable | S/2 × 95% |
 | LP Gauge | Variable | S/2 × 95% |
 
-At S = 50%, this produces: 5% treasury, 47.5% stakers, 23.75% VE pools, 23.75% LP gauge.
-
 ---
 
-## Fee Distribution
+## Dynamic Incentive vs Fee Distribution
 
-Trading fees from Aerodrome are split 50/50:
+The fee distribution is **intentionally inverted** relative to emissions:
+
+### Fee Flow
 
 ```
 Trading Fees (100%)
        │
        ├──► 50% to C-AERO holders (direct via globalFeeIndex)
        │
-       └──► 50% to META contract
+       └──► 50% to META.receiveFees()
                   │
                   ├──► S portion → META stakers
                   │
                   └──► (1-S) portion → LP gauge
 ```
 
-### Inverse Incentive Alignment
+### Inverse Relationship
 
-Emissions and fees are intentionally inverted:
+| Recipient | META Emissions | AERO Fees | Net Effect |
+|-----------|----------------|-----------|------------|
+| META Stakers | (1 - S) | S | High S → more fees, fewer emissions |
+| LP Gauge | S/2 | (1 - S) | Low S → more fee subsidy |
+
+### Why Inversion Works
+
+- **Early stage (low S):** LP gauge receives more fee revenue, subsidising liquidity bootstrapping
+- **Mature stage (high S):** Stakers receive more fee revenue as reward for commitment
+- **Equilibrium:** Around S = 50%, incentives to stake and provide liquidity are balanced
+
+### Distribution at S = 50%
 
 | Recipient | META Emissions | AERO Fees |
 |-----------|----------------|-----------|
-| META Stakers | (1 - S) | S |
-| LP Gauge | S/2 | (1 - S) |
-
-**Rationale:**
-- **Early stage (low S):** LP gauge receives more fees, subsidising liquidity bootstrapping
-- **Mature stage (high S):** Stakers receive more fees as reward for commitment
-- **Equilibrium:** Balanced incentives around S = 50%
+| C-AERO Holders | — | 50% |
+| META Stakers | 46.1% | 25% |
+| VE Pools | 23.05% | — |
+| LP Gauge | 23.05% | 25% |
+| Treasury | 5% | — |
 
 ---
 
@@ -167,42 +178,55 @@ Emissions and fees are intentionally inverted:
 
 All operations align with Aerodrome's weekly epoch (Thursday 00:00 UTC → Thursday 00:00 UTC).
 
-| Window | Time (UTC) | Available Actions |
-|--------|------------|-------------------|
-| Epoch Start | Thu 00:00 | Tokens unlock, new epoch begins |
-| Deposit Window | Thu 00:01 – Wed 21:44 | `depositVeAero()`, `vote()`, `lockAndVote()` |
-| Deposit Closed | Wed 21:45 | Preparation for execution |
-| Execution Window | Wed 22:00 – Thu 00:00 | `executeGaugeVote()` |
-| META Vote Window | Wed 23:00 – Thu 00:00 | `pushVote()` |
+| Time (UTC) | Window | Available Actions |
+|------------|--------|-------------------|
+| Thu 00:00 | Epoch start | Tokens unlock, new epoch begins |
+| Thu 00:01 – Wed 21:44 | Deposit window | `depositVeAero()`, `vote()`, `lockAndVote()` |
+| Wed 21:45 – 22:00 | Deposit closed | Consolidation preparation |
+| Wed 22:00 – Thu 00:00 | Execution window | `executeGaugeVote()` |
+| Wed 23:00 – Thu 00:00 | Snapshot window | `snapshotForBribes()`, `pushVote()` |
 
 ---
 
-## Governance
+## Integrated Locking & Anti-Gaming
 
-### META Contract Voting Power
+### Epoch-Based Lock Architecture
 
-The META contract accumulates 9% of all V-AERO from deposits. This voting power is deployed weekly via `pushVote()`:
+| Action | Token | Lock Duration | Unlock Trigger |
+|--------|-------|---------------|----------------|
+| `VToken.vote()` | V-AERO | Until epoch end | Epoch rollover |
+| `CToken.voteEmissions()` | C-AERO | Until epoch end | Epoch rollover |
+| `META.lockAndVote()` | META | Until epoch end | Epoch rollover |
+| `confirmLiquidation()` | V-AERO | Until resolution | Liquidation end |
+| `voteLiquidation()` | C-AERO | Until resolution | Liquidation end |
 
-- **50% Passive:** Follows the collective user vote
-- **50% LP Pool:** Directs to META-AERO liquidity gauge
+### Transfer Settlement
 
-This creates a **flywheel effect** where more deposits → more protocol voting power → stronger LP incentives → deeper liquidity.
-
-### Multisig Responsibilities
-
-The MSIG (`0xeAcf5B81136db1c29380BdaCDBE5c7e1138A1d93`) handles only high-level governance:
-
-- Whitelisting VE pools
-- Updating contract addresses
-- LP pool/gauge configuration
-
-**No withdrawal or funding responsibilities** — all value flows are programmatic.
+On C-AERO transfers, the `onCTokenTransfer` hook prevents windfall attacks:
+- Sender's unclaimed fees swept to treasury
+- Receiver assigned current `globalFeeIndex` (no windfall)
+- Existing holders receive weighted average checkpoint
 
 ---
 
-## Liquidation
+## META Staking
 
-Protocol wind-down requires supermajority consent through a 6-phase process:
+```solidity
+META.lockAndVote(amount, vePoolAddress)  // Stake and vote
+META.initiateUnlock()                     // Start ~2 day cooldown
+META.completeUnlock()                     // Withdraw after cooldown
+META.claimRewards()                       // Claim META + AERO
+```
+
+Stakers earn:
+- **(1-S) share** of META emissions
+- **S share** of AERO fees routed through META
+
+---
+
+## Liquidation Process
+
+Protocol wind-down requires supermajority consent through 6 phases:
 
 | Phase | Name | Threshold | Duration |
 |-------|------|-----------|----------|
@@ -213,7 +237,42 @@ Protocol wind-down requires supermajority consent through a 6-phase process:
 | 4 | Approved | ≥50% V-AERO | 7 days |
 | 5 | Closed | Claim window expires | Final |
 
-R-AERO tokens are minted 1:1 for C-AERO locked during CVote phase, representing claims on underlying veAERO NFTs.
+R-AERO tokens are minted 1:1 for C-AERO locked during CVote, representing claims on underlying veAERO NFTs.
+
+---
+
+## Vested Interest Model (No Keepers)
+
+The protocol removes keeper dependency by ensuring every critical action can be triggered profitably by participants:
+
+| Function | When | Who Benefits |
+|----------|------|--------------|
+| `collectFees()` | After trades | C-AERO holders, META stakers |
+| `updateIndex()` | Daily | META stakers, VE pools, LPs |
+| `pushToLPGauge()` | After fees/emissions | LP gauge participants |
+| `executeGaugeVote()` | Wed 22:00 – Thu 00:00 | All V-AERO voters |
+| `pushVote()` | Wed 23:00 – Thu 00:00 | META protocol |
+
+---
+
+## Gas Optimisations
+
+| Technique | Benefit |
+|-----------|---------|
+| Index-based claims | O(1) complexity regardless of time elapsed |
+| Bitpacked vote storage | ~80% storage savings vs plain mappings |
+| Immutable addresses | Bytecode constants vs SLOAD |
+| Lazy epoch transitions | First user pays reset; others benefit |
+
+---
+
+## Security
+
+- **CEI Pattern:** All functions follow Checks-Effects-Interactions
+- **Reentrancy Guards:** OpenZeppelin ReentrancyGuard on state-changing functions
+- **Transfer Settlement:** Prevents fee windfall attacks on C-AERO transfers
+- **Epoch Locks:** Voting locks tokens until epoch end, preventing vote-and-dump
+- **Bribe Snapshots:** 1-hour window prevents last-second sniping
 
 ---
 
@@ -234,11 +293,9 @@ forge build
 ### Deploy
 
 ```bash
-# Set environment
 export BASE_RPC_URL=https://mainnet.base.org
 export PRIVATE_KEY=0x...
 
-# Deploy
 forge script script/DeployMainnet_V4.s.sol:DeployMainnet_V4 \
   --rpc-url $BASE_RPC_URL \
   --broadcast \
@@ -247,20 +304,22 @@ forge script script/DeployMainnet_V4.s.sol:DeployMainnet_V4 \
 
 ---
 
-## Security
+## Governance
 
-- **CEI Pattern:** All functions follow Checks-Effects-Interactions
-- **Reentrancy Guards:** OpenZeppelin ReentrancyGuard on state-changing functions
-- **Index-Based Claims:** O(1) claim complexity regardless of time elapsed
-- **Transfer Settlement:** Prevents fee windfall attacks on C-AERO transfers
-- **Epoch Locks:** Voting locks tokens until epoch end, preventing vote-and-dump
+The MSIG (`0xeAcf5B81136db1c29380BdaCDBE5c7e1138A1d93`) handles only high-level governance:
+
+- Whitelisting VE pools
+- Updating contract addresses
+- LP pool/gauge configuration
+
+**No withdrawal or funding responsibilities**—all value flows are programmatic.
 
 ---
 
 ## License
 
-BUSL-1.1
-
----
-
-*© 2025 Tokenisys. All rights reserved.*
+```
+SPDX-License-Identifier: UNLICENSED
+© 2025 Tokenisys. All rights reserved.
+Caveat Utilitator
+```
