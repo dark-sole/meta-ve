@@ -1,0 +1,52 @@
+[profile.default]
+src = "contracts"
+out = "out"
+libs = ["lib"]
+test = "test"
+solc = "0.8.24"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 1
+via_ir = true
+fuzz = { runs = 256, max_test_rejects = 65536 }
+invariant = { runs = 256, depth = 15 }
+
+remappings = [
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+    "forge-std/=lib/forge-std/src/"
+]
+
+# CI profile - more thorough fuzz testing
+[profile.ci]
+src = "contracts"
+out = "out"
+libs = ["lib"]
+test = "test"
+solc = "0.8.24"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 1
+via_ir = true
+fuzz = { runs = 10000, max_test_rejects = 65536 }
+invariant = { runs = 1000, depth = 50 }
+
+# Slither profile - disable via_ir for compatibility
+[profile.slither]
+src = "contracts"
+out = "out"
+libs = ["lib"]
+solc = "0.8.24"
+evm_version = "cancun"
+optimizer = false
+via_ir = false
+
+[rpc_endpoints]
+base = "${BASE_RPC_URL}"
+
+[etherscan]
+base = { key = "${BASESCAN_API_KEY}" }
+
+[fmt]
+line_length = 120
+tab_width = 4
+bracket_spacing = true
