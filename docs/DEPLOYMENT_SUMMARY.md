@@ -1,4 +1,4 @@
-# META V8 Mainnet Deployment Summary
+# META VE Mainnet Deployment Summary
 
 **Date:** December 16, 2025  
 **Network:** Base Mainnet (Chain ID: 8453)  

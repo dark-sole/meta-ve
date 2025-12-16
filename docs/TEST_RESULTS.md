@@ -1,7 +1,7 @@
 # V6 Test Suite Results & Analysis
 
 **Date:** December 2024  
-**Version:** V6 Architecture (VToken Vote Aggregation)  
+**Version:** V8 Architecture (VToken Vote Aggregation)  
 **Total Tests:** 341  
 **Pass Rate:** 100%
 
