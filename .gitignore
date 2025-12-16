@@ -17,6 +17,8 @@ cache/
 out/
 broadcast/
 
+.DS_Store
+
 # Environment
 .env
 .env.*

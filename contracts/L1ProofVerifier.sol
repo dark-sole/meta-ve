@@ -15,9 +15,6 @@ pragma solidity ^0.8.24;
  * 4. Extract remote L2's state root from outputRoot
  * 5. Verify storage values against remote L2's state root
  * 
- * SUPPORTED CHAINS:
- * - Optimism (L2OutputOracle pattern)
- * - Arbitrum (Outbox/RollupCore pattern) - future
  */
 
 // ============ EXTERNAL INTERFACES ============

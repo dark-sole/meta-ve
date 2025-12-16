@@ -11,7 +11,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./Interfaces.sol";
 
 /**
- * @title CToken (C-AERO) V4
+ * @title CToken (C-AERO) V6
  * @notice Capital rights token with integrated META distribution
  * @dev Gas optimized, CEI compliant
  * 
@@ -45,7 +45,7 @@ contract CToken is ERC20, Ownable, ReentrancyGuard {
     error MustVoteWholeTokens();
     error NothingToClaim();
     error MetaNotSet();
-    
+    error LiquidationAlreadySet();
     // ════════════════════════════════════════════════════════════════════════
     // EVENTS
     // ════════════════════════════════════════════════════════════════════════
@@ -56,14 +56,14 @@ contract CToken is ERC20, Ownable, ReentrancyGuard {
     event LiquidationVoted(address indexed user, uint256 amount);
     event MetaDistributed(uint256 amount, uint256 newMetaPerCToken);
     event MetaClaimed(address indexed user, uint256 amount);
-    
+    event LiquidationSet(address indexed liquidation);
     // ════════════════════════════════════════════════════════════════════════
     // STATE
     // ════════════════════════════════════════════════════════════════════════
     
     address public splitter;
     IMeta public meta;
-    
+    address public liquidation;
     /// @notice META per C-AERO token (scaled by PRECISION)
     uint256 public metaPerCToken;
     
@@ -112,7 +112,12 @@ contract CToken is ERC20, Ownable, ReentrancyGuard {
         meta = IMeta(_meta);
         emit MetaSet(_meta);
     }
-    
+    function setLiquidation(address _liquidation) external onlyOwner {
+        if (_liquidation == address(0)) revert ZeroAddress();
+        if (liquidation != address(0)) revert LiquidationAlreadySet();
+        liquidation = _liquidation;
+        emit LiquidationSet(_liquidation);
+    }
     // ════════════════════════════════════════════════════════════════════════
     // SPLITTER FUNCTIONS
     // ════════════════════════════════════════════════════════════════════════
@@ -293,7 +298,7 @@ contract CToken is ERC20, Ownable, ReentrancyGuard {
     }
     
     /**
-     * @notice Vote for liquidation (transfers tokens to splitter)
+     * @notice Vote for liquidation
      */
     function voteLiquidation(uint256 amount) external nonReentrant {
         if (amount == 0) revert ZeroAmount();
@@ -304,11 +309,11 @@ contract CToken is ERC20, Ownable, ReentrancyGuard {
         // EFFECTS - Checkpoint META before transfer
         _checkpointUser(msg.sender);
         
-        // Transfer includes _update which handles debt
-        _transfer(msg.sender, splitter, amount);
+        // Transfer to liquidation contract (not splitter)
+        _transfer(msg.sender, liquidation, amount);
         
-        // INTERACTIONS
-        IVeAeroSplitter(splitter).recordCLock(msg.sender, amount);
+        // INTERACTIONS - Record in liquidation contract
+        IVeAeroLiquidation(liquidation).recordCLock(msg.sender, amount);
         
         emit LiquidationVoted(msg.sender, amount);
     }

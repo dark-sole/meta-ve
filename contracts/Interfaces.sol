@@ -4,12 +4,8 @@
 pragma solidity ^0.8.24;
 
 /**
- * @title Interfaces V4 (CORRECTED)
- * @notice Centralized interface definitions for VeAero Ecosystem V4
- * 
- * FIXES APPLIED:
- * - IMeta.getPoolInfo() now returns 4 values (added chainId)
- * - All IVeAeroSplitter functions that CToken needs are included
+ * @title Interfaces
+ * @notice Centralized interface definitions for VeAero Ecosystem V6
  */
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -18,12 +14,11 @@ pragma solidity ^0.8.24;
 
 /**
  * @title IVeAeroSplitter
- * @notice Interface for VeAeroSplitter V3.2 called by tokens
+ * @notice Interface for VeAeroSplitter V6 tokens
  */
 interface IVeAeroSplitter {
-    // Gauge voting (called by VToken)
-    function recordGaugeVote(address user, address pool, uint256 amount) external;
-    function recordPassiveVote(address user, uint256 amount) external;
+    // Gauge voting
+    function executeGaugeVote() external;
     
     // Emissions voting (called by CToken)
     function recordEmissionsVote(address user, int8 choice, uint256 amount) external;
@@ -43,6 +38,9 @@ interface IVeAeroSplitter {
     
     // Total V locked for bribe snapshot
     function totalVLockedForVoting() external view returns (uint256);
+
+    function isValidGauge(address pool) external view returns (bool);
+    function validateGauge(address pool) external view;
     
     // Transfer settlement (called by CToken._update)
     // Settles sender's rewards to treasury, weighted checkpoint for receiver
@@ -69,7 +67,30 @@ interface IVToken {
     // Voting (called by Meta for V-AERO voting)
     function vote(address pool, uint256 amount) external;
     function votePassive(uint256 amount) external;
+
+    // Vote aggregation
+    function getAggregatedVotes() external view returns (
+        address[] memory pools,
+        uint256[] memory weights
+    );
+    
+    // Epoch reset
+    function resetVotesForNewEpoch() external;
+    
+    // View functions
+    function getTotalVotedPools() external view returns (uint256);
+    function getPoolVotes(address pool) external view returns (uint256);
+    function totalPassiveVotes() external view returns (uint256);
+    function weightsEpoch() external view returns (uint256);
+    
+    // Admin
+    function configureVotingStorage(uint256 maxPools, uint256 totalSupply) external;
+    
+    // Existing functions
+    function unlockedBalanceOf(address account) external view returns (uint256);
+    function totalGaugeVotedThisEpoch() external view returns (uint256);
 }
+
 
 /**
  * @title ICToken
@@ -95,7 +116,7 @@ interface IRToken {
  * @notice Interface for META token
  */
 interface IMeta {
-    // V4: Fee receiving from VeAeroSplitter
+    // Fee receiving from VeAeroSplitter
     function receiveFees(uint256 amount) external;
     
     // Index updates (used by CToken)
@@ -107,7 +128,7 @@ interface IMeta {
     // VE Pool claims (used by CToken)
     function claimForVEPool() external returns (uint256);
     
-    // FIXED: Added chainId to match Meta.sol implementation
+    // Added chainId to match Meta.sol implementation
     function getPoolInfo(address vePool) external view returns (
         bool whitelisted,
         uint256 votes,
@@ -152,6 +173,8 @@ interface IVotingEscrow {
     function unlockPermanent(uint256 tokenId) external;
     function merge(uint256 from, uint256 to) external;
     function depositFor(uint256 tokenId, uint256 amount) external;
+    function split(uint256 _from, uint256 _amount) external returns (uint256 _tokenId1, uint256 _tokenId2);
+    function canSplit(address _account) external view returns (bool);
 }
 
 /**
@@ -211,4 +234,46 @@ interface IL1ProofVerifier {
         uint256 burnedAmount,
         bytes calldata proof
     ) external view returns (bool);
+}
+
+/**
+ * @title IVeAeroLiquidation
+ * @notice Interface for VeAeroLiquidation contract 
+ */
+interface IVeAeroLiquidation {
+    // Enum must be declared in interface for return type
+    enum LiquidationPhase { Normal, CLock, CVote, VConfirm, Approved, Closed }
+    
+    // Called by CToken/VToken
+    function recordCLock(address user, uint256 amount) external;
+    function recordVConfirmation(address user, uint256 amount) external;
+    
+    // Called by anyone (phase resolution)
+    function resolveCVote(uint256 currentEpoch) external;
+    function resolveVConfirm(uint256 currentEpoch) external;
+    
+    // Called by users (after failed liquidation)
+    function withdrawFailedLiquidation() external;
+    
+    // Called by Splitter only
+    function markClosed() external;
+    
+    // View functions
+    function liquidationPhase() external view returns (LiquidationPhase);
+    function isLiquidationApproved() external view returns (bool);
+    function getLiquidationApprovedTime() external view returns (uint256);
+    function getUserCLocked(address user) external view returns (uint256);
+    function getTotalCLocked() external view returns (uint256);
+    function getLiquidationStatus(
+        uint256 currentEpoch,
+        uint256 epochEndTime
+    ) external view returns (
+        LiquidationPhase phase,
+        uint256 cLockedPercent,
+        uint256 vLockedPercent,
+        uint256 cTargetPercent,
+        uint256 vTargetPercent,
+        uint256 timeRemaining
+    );
+    function daysRemainingInCVote() external view returns (uint256);
 }

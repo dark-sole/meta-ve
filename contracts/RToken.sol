@@ -7,10 +7,8 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
- * @title RToken (R-AERO) V3
+ * @title RToken (R-AERO) V6
  * @notice Liquidation receipt token - represents claim on underlying veAERO
- * @dev V3 Changes:
- *      - 18 decimals (consistent with V-AERO and C-AERO)
  */
 contract RToken is ERC20, Ownable {
     
@@ -41,7 +39,7 @@ contract RToken is ERC20, Ownable {
     constructor() ERC20("Receipt AERO", "R-AERO") Ownable(msg.sender) {}
     
     // ═══════════════════════════════════════════════════════════════
-    // DECIMALS OVERRIDE - 18 DECIMALS (V3)
+    // DECIMALS OVERRIDE - 18 DECIMALS
     // ═══════════════════════════════════════════════════════════════
     
     /**

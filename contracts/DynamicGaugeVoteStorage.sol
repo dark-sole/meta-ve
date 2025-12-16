@@ -82,7 +82,7 @@ library DynamicGaugeVoteStorage {
      * @notice Calculate optimal configuration
      * @param totalSupply Total token supply (to determine bits needed)
      * @param poolCount Current number of pools
-     * @param buffer Extra pools to allow for growth (e.g., 50)
+     * @param buffer Extra pools to allow for growth
      * @param maxSlotsLimit Maximum slots allowed (configurable by admin)
      * @return config Calculated configuration
      */

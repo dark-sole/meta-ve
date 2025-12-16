@@ -13,12 +13,36 @@ import "./Interfaces.sol";
 
 /**
  * @title Meta V6
- * @notice META token with utilization-based emissions, AERO fee distribution, LP gauge, multi-chain VE
+ * @notice META token with utilization-based emissions, multi-VE support
  * @dev Gas optimized, CEI compliant
  * 
- * REWARD SPLITS:
- * - AERO fees (50% from splitter): (1-S) to LP gauge, S to stakers
- * - META incentives (92.2%): (1-S) to stakers, S/2 to VE pools, S/2 to LP gauge
+ * FEE DISTRIBUTION (local fees only - AERO on Base):
+ * Phase 1 (multiVEEnabled = false):
+ * - 50% → C-AERO holders (poolFeeAccrued)
+ * - 50% × S → META stakers (feeRewardIndex)
+ * - 50% × (1-S) → C-AERO holders (poolFeeAccrued)
+ * 
+ * Phase 2 (multiVEEnabled = true):
+ * - 50% → C-AERO holders (poolFeeAccrued)
+ * - 50% × S → META stakers (feeRewardIndex)
+ * - 50% × (1-S) × VOTE_AERO → C-AERO holders (poolFeeAccrued)
+ * - 50% × (1-S) × (1-VOTE_AERO) → FeeContract (for remote C-tokens)
+ * 
+ * META EMISSIONS (95% of minted):
+ * - 5% → Treasury
+ * - (1-S) × 95% → META stakers (on Base)
+ * - S/2 × 95% → C-tokens:
+ *   - Phase 1: 100% to C-AERO (poolAccrued)
+ *   - Phase 2: VOTE_AERO to C-AERO, rest to FeeContract
+ * - S/2 × 95% → LP incentives:
+ *   - Phase 1: 100% to META-AERO LP gauge
+ *   - Phase 2: VOTE_AERO to META-AERO LP gauge, rest to FeeContract
+ * 
+ * MULTI-CHAIN MODEL:
+ * - Fees stay local (each chain distributes native VE token)
+ * - META emissions: local via poolAccrued, remote via FeeContract
+ * - FeeContract handles its own indexation for remote C-tokens
+ * - Staking/voting only on Base
  */
 contract Meta is ERC20, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -38,6 +62,7 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
     uint256 public constant TREASURY_BPS = 500;
     uint256 public constant INCENTIVES_BPS = 9220;
     uint256 public constant EPOCH_DURATION = 7 days;
+    uint256 public constant LOCAL_CHAIN_ID = 8453; // Base mainnet
     
     // ════════════════════════════════════════════════════════════════════════
     // IMMUTABLES
@@ -76,15 +101,29 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
     
     uint256 public totalLockedVotes;
     uint256 public remainingSupply;
-    uint256 public accumulatedLPMeta;
-    uint256 public accumulatedLPAero;
+    uint256 public totalUnlocking;
     
     address public msigTreasury;
     address public splitter;
     address public vToken;
-    address public lpPool;
-    address public lpGauge;
-    bool public lpGaugeLocked;
+    address public lpPool;              // Primary LP pool for voting (META-AERO)
+    
+    // ════════════════════════════════════════════════════════════════════════
+    // CROSS-CHAIN STATE
+    // ════════════════════════════════════════════════════════════════════════
+    
+    address public l1ProofVerifier;                         // For verifying remote claims
+    mapping(uint256 => bool) public isWhitelistedChain;     // chainId => whitelisted
+    uint256[] public chainList;                             // List of remote chain IDs
+
+    bool public l1ProofVerifierChangeable;
+    
+    // ════════════════════════════════════════════════════════════════════════
+    // MULTI-VE STATE
+    // ════════════════════════════════════════════════════════════════════════
+    
+    bool public multiVEEnabled;         // One-way flag for Phase 2
+    address public feeContract;         // FeeDistributor for remote C-token fees and LP incentives
     
     // ════════════════════════════════════════════════════════════════════════
     // VE POOL STATE
@@ -97,6 +136,14 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
     /// @dev Packed: [128 bits baseline][128 bits accrued]
     mapping(address => uint256) internal _poolData;
     
+    /// @dev Per-pool LP gauge (only meaningful for local pools)
+    mapping(address => address) public poolLPGauge;
+    /// @dev META emissions accrued for LP incentives
+    mapping(address => uint256) public poolLPAccruedMeta;
+    
+    /// @dev Fee accumulator for C-token holders (local AERO fees only)
+    mapping(address => uint256) public poolFeeAccrued;    // vePool => AERO fees for C-token
+    
     // ════════════════════════════════════════════════════════════════════════
     // USER STATE
     // ════════════════════════════════════════════════════════════════════════
@@ -104,6 +151,7 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
     mapping(address => uint256) public userLockedAmount;
     mapping(address => address) public userVotedPool;
     mapping(address => uint256) public userUnlockTime;
+    mapping(address => uint256) public userUnlockingAmount;
     
     /// @dev Packed: [128 bits META baseline][128 bits fee baseline]
     mapping(address => uint256) internal _userBaselines;
@@ -122,12 +170,22 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
     event Unlocked(address indexed user, uint256 amount);
     event RewardsClaimed(address indexed user, uint256 metaAmount, uint256 aeroAmount);
     event VEPoolClaimed(address indexed vePool, uint256 amount);
+    event VEPoolFeesClaimed(address indexed vePool, uint256 amount);
     event TreasuryClaimed(address indexed treasury, uint256 amount);
-    event VEPoolAdded(address indexed vePool, uint256 chainId);
+    event VEPoolAdded(address indexed vePool, uint256 chainId, address lpGauge);
     event VEPoolRemoved(address indexed vePool);
-    event FeesReceived(uint256 amount, uint256 toLPs, uint256 toStakers);
-    event PushedToLPGauge(uint256 metaAmount, uint256 aeroAmount);
+    event LPGaugeUpdated(address indexed vePool, address indexed lpGauge);
+    event FeesReceived(uint256 amount, uint256 toCToken, uint256 toStakers, uint256 toFeeContract);
+    event CTokenIncentivesDistributed(uint256 toLocalPool, uint256 toFeeContract);
+    event LPIncentivesDistributed(uint256 toLocalGauge, uint256 toFeeContract);
+    event PushedToLPGauge(address indexed vePool, uint256 metaAmount);
     event VotePushed(uint256 passiveAmount, uint256 lpPoolAmount);
+    event ChainWhitelisted(uint256 indexed chainId);
+    event ChainRemoved(uint256 indexed chainId);
+    event L1ProofVerifierSet(address indexed verifier);
+    event L1ProofAuthorityRenounced();
+    event FeeContractSet(address indexed feeContract);
+    event MultiVEEnabled();
     
     // ════════════════════════════════════════════════════════════════════════
     // ERRORS
@@ -149,10 +207,18 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
     error OnlyPool();
     error OnlySplitter();
     error AlreadySet();
-    error LPGaugeIsLocked();
     error VoteWindowNotOpen();
     error LPPoolNotSet();
     error VTokenNotSet();
+    error ExceedsAvailable();
+    error LPGaugeNotSet();
+    error ChainNotWhitelisted();
+    error ChainAlreadyWhitelisted();
+    error NotLocalPool();
+    error InvalidChainId();
+    error L1ProofAuthorityAlreadyRenounced();
+    error MultiVEAlreadyEnabled();
+    error FeeContractNotSet();
     
     // ════════════════════════════════════════════════════════════════════════
     // MODIFIERS
@@ -189,10 +255,13 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         TREASURY = treasury;
         AERO = IERC20(aero);
         msigTreasury = msig;
-        
+
         baseIndex = I_INITIAL;
         treasuryBaselineIndex = I_INITIAL;
         remainingSupply = TOTAL_SUPPLY;
+
+        l1ProofVerifierChangeable = true;
+        multiVEEnabled = false;
         
         // Mint 2.8% to Tokenisys
         uint256 tokenisysMint = (TOTAL_SUPPLY * TOKENISYS_BPS) / BPS;
@@ -241,19 +310,15 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
     }
     
     function setLPPool(address _pool) external onlyMSIG {
-        if (lpGaugeLocked) revert LPGaugeIsLocked();
         if (_pool == address(0)) revert ZeroAddress();
         lpPool = _pool;
     }
     
-    function setLPGauge(address _gauge) external onlyMSIG {
-        if (lpGaugeLocked) revert LPGaugeIsLocked();
-        if (_gauge == address(0)) revert ZeroAddress();
-        lpGauge = _gauge;
-    }
-    
-    function lockLPGauge() external onlyMSIG {
-        lpGaugeLocked = true;
+    function setPoolLPGauge(address vePool, address lpGauge_) external onlyMSIG {
+        if (!isWhitelistedVEPool[vePool]) revert NotWhitelisted();
+        if (lpGauge_ == address(0)) revert ZeroAddress();
+        poolLPGauge[vePool] = lpGauge_;
+        emit LPGaugeUpdated(vePool, lpGauge_);
     }
     
     function setMSIG(address newMSIG) external onlyMSIG {
@@ -262,77 +327,200 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
     }
     
     // ════════════════════════════════════════════════════════════════════════
-    // FEE RECEIVING (CEI COMPLIANT)
+    // CROSS-CHAIN SETUP (MSIG)
+    // ════════════════════════════════════════════════════════════════════════
+    
+    function renounceL1ProofAuthority() external onlyMSIG {
+        if (!l1ProofVerifierChangeable) revert L1ProofAuthorityAlreadyRenounced();
+        if (l1ProofVerifier == address(0)) revert ZeroAddress();
+        l1ProofVerifierChangeable = false;
+        emit L1ProofAuthorityRenounced();
+    }
+
+    function setL1ProofVerifier(address _verifier) external onlyMSIG {
+        if (_verifier == address(0)) revert ZeroAddress();
+        if (!l1ProofVerifierChangeable) revert L1ProofAuthorityAlreadyRenounced();
+        l1ProofVerifier = _verifier;
+        emit L1ProofVerifierSet(_verifier);
+    }
+    
+    function whitelistChain(uint256 chainId) external onlyMSIG {
+        if (chainId == LOCAL_CHAIN_ID) revert InvalidChainId();
+        if (isWhitelistedChain[chainId]) revert ChainAlreadyWhitelisted();
+        
+        isWhitelistedChain[chainId] = true;
+        chainList.push(chainId);
+        
+        emit ChainWhitelisted(chainId);
+    }
+    
+    function removeChain(uint256 chainId) external onlyMSIG {
+        if (!isWhitelistedChain[chainId]) revert ChainNotWhitelisted();
+        
+        isWhitelistedChain[chainId] = false;
+        
+        uint256 len = chainList.length;
+        for (uint256 i = 0; i < len; ) {
+            if (chainList[i] == chainId) {
+                chainList[i] = chainList[len - 1];
+                chainList.pop();
+                break;
+            }
+            unchecked { ++i; }
+        }
+        
+        emit ChainRemoved(chainId);
+    }
+    
+    // ════════════════════════════════════════════════════════════════════════
+    // MULTI-VE SETUP (MSIG)
+    // ════════════════════════════════════════════════════════════════════════
+    
+    function setFeeContract(address _feeContract) external onlyMSIG {
+        if (_feeContract == address(0)) revert ZeroAddress();
+        feeContract = _feeContract;
+        emit FeeContractSet(_feeContract);
+    }
+    
+    function enableMultiVE() external onlyMSIG {
+        if (multiVEEnabled) revert MultiVEAlreadyEnabled();
+        if (feeContract == address(0)) revert FeeContractNotSet();
+        multiVEEnabled = true;
+        emit MultiVEEnabled();
+    }
+    
+    // ════════════════════════════════════════════════════════════════════════
+    // FEE RECEIVING (LOCAL ONLY - CEI COMPLIANT)
     // ════════════════════════════════════════════════════════════════════════
     
     /**
-     * @notice Receive AERO fees from splitter
-     * @dev CEI: We trust the amount parameter since onlySplitter
-     *      Split: (1-S) to LP gauge, S to stakers
+     * @notice Receive AERO fees from local splitter
+     * @dev Distribution depends on multiVEEnabled flag:
+     *      Phase 1: 50% C-token, 50%×S stakers, 50%×(1-S) C-token
+     *      Phase 2: 50% C-token, 50%×S stakers, 50%×(1-S)×VOTE_AERO C-token, rest to feeContract
      */
     function receiveFees(uint256 amount) external onlySplitter nonReentrant {
         if (amount == 0) return;
         
-        // CHECKS - Calculate split with cached S
-        uint256 _totalLocked = totalLockedVotes;  // Cache storage read
-        uint256 _remaining = remainingSupply;
-        uint256 circulating = TOTAL_SUPPLY - _remaining;
-        
-        uint256 S;
-        if (circulating > 0) {
-            S = (_totalLocked * PRECISION) / circulating;
-            if (S > PRECISION) S = PRECISION;
+        // Get local VE pool (C-AERO on Base)
+        address localPool = _getLocalVEPool();
+        if (localPool == address(0)) {
+            // No local pool configured, send all to stakers
+            if (totalLockedVotes > 0) {
+                feeRewardIndex += uint128((amount * PRECISION) / totalLockedVotes);
+            }
+            AERO.safeTransferFrom(msg.sender, address(this), amount);
+            emit FeesReceived(amount, 0, amount, 0);
+            return;
         }
         
-        uint256 toLPs = (amount * (PRECISION - S)) / PRECISION;
-        uint256 toStakers = amount - toLPs;
+        // CHECKS - Calculate split
+        uint256 S = getCurrentS();
         
-        // EFFECTS - Update state before external call
-        accumulatedLPAero += toLPs;
+        uint256 toCToken = amount / 2;                       // 50%
+        uint256 remaining = amount - toCToken;               // 50%
+        uint256 toStakers = (remaining * S) / PRECISION;     // 50% × S
+        uint256 veShare = remaining - toStakers;             // 50% × (1-S)
         
-        if (toStakers > 0 && _totalLocked > 0) {
-            feeRewardIndex += uint128((toStakers * PRECISION) / _totalLocked);
+        // EFFECTS
+        poolFeeAccrued[localPool] += toCToken;
+        
+        if (toStakers > 0 && totalLockedVotes > 0) {
+            feeRewardIndex += uint128((toStakers * PRECISION) / totalLockedVotes);
         }
         
-        // INTERACTIONS - External call last
+        uint256 toFeeContract = 0;
+        
+        if (multiVEEnabled && veShare > 0) {
+            // Phase 2: Split veShare by vote weight
+            uint256 aeroVotes = poolVotes[localPool];
+            uint256 _totalLocked = totalLockedVotes;
+            
+            if (_totalLocked > 0 && aeroVotes > 0) {
+                uint256 toCTokenFromVE = (veShare * aeroVotes) / _totalLocked;
+                toFeeContract = veShare - toCTokenFromVE;
+                poolFeeAccrued[localPool] += toCTokenFromVE;
+            } else {
+                // No votes, all to feeContract
+                toFeeContract = veShare;
+            }
+        } else {
+            // Phase 1: All veShare to C-AERO
+            poolFeeAccrued[localPool] += veShare;
+        }
+        
+        // INTERACTIONS
         AERO.safeTransferFrom(msg.sender, address(this), amount);
         
-        emit FeesReceived(amount, toLPs, toStakers);
+        if (toFeeContract > 0) {
+            AERO.safeTransfer(feeContract, toFeeContract);
+        }
+        
+        emit FeesReceived(amount, toCToken + (veShare - toFeeContract), toStakers, toFeeContract);
+    }
+    
+    /**
+     * @notice Get the local (Base chain) VE pool
+     */
+    function _getLocalVEPool() internal view returns (address) {
+        uint256 len = vePoolList.length;
+        for (uint256 i = 0; i < len; ) {
+            address pool = vePoolList[i];
+            if (vePoolChainId[pool] == LOCAL_CHAIN_ID) {
+                return pool;
+            }
+            unchecked { ++i; }
+        }
+        return address(0);
     }
     
     // ════════════════════════════════════════════════════════════════════════
     // LP GAUGE (CEI COMPLIANT)
     // ════════════════════════════════════════════════════════════════════════
     
-    function _pushToLPGauge() internal {
-        address _lpGauge = lpGauge;  // Cache
-        if (_lpGauge == address(0)) return;
+    /**
+     * @notice Push accrued META to LP gauge
+     * @dev Only pushes to local gauges. META only (no AERO).
+     */
+    function _pushToLPGauge(address vePool) internal {
+        // Only push to local gauges from this contract
+        if (vePoolChainId[vePool] != LOCAL_CHAIN_ID) return;
         
-        uint256 metaAmt = accumulatedLPMeta;
-        uint256 aeroAmt = accumulatedLPAero;
+        address gauge = poolLPGauge[vePool];
+        if (gauge == address(0)) return;
         
-        if (metaAmt == 0 && aeroAmt == 0) return;
+        uint256 metaAmt = poolLPAccruedMeta[vePool];
+        if (metaAmt == 0) return;
         
-        // EFFECTS - Clear before external calls
-        accumulatedLPMeta = 0;
-        accumulatedLPAero = 0;
+        // EFFECTS
+        poolLPAccruedMeta[vePool] = 0;
         
         // INTERACTIONS
-        if (metaAmt > 0) {
-            _approve(address(this), _lpGauge, metaAmt);
-            IGauge(_lpGauge).notifyRewardAmount(address(this), metaAmt);
-        }
+        _approve(address(this), gauge, metaAmt);
+        IGauge(gauge).notifyRewardAmount(address(this), metaAmt);
         
-        if (aeroAmt > 0) {
-            AERO.approve(_lpGauge, aeroAmt);
-            IGauge(_lpGauge).notifyRewardAmount(address(AERO), aeroAmt);
-        }
-        
-        emit PushedToLPGauge(metaAmt, aeroAmt);
+        emit PushedToLPGauge(vePool, metaAmt);
     }
     
-    function pushToLPGauge() external nonReentrant {
-        _pushToLPGauge();
+    function _pushAllLocalLPGauges() internal {
+        uint256 len = vePoolList.length;
+        for (uint256 i = 0; i < len; ) {
+            address pool = vePoolList[i];
+            if (vePoolChainId[pool] == LOCAL_CHAIN_ID) {
+                _pushToLPGauge(pool);
+            }
+            unchecked { ++i; }
+        }
+    }
+    
+    function pushToLPGauge(address vePool) external nonReentrant {
+        if (!isWhitelistedVEPool[vePool]) revert NotWhitelisted();
+        if (vePoolChainId[vePool] != LOCAL_CHAIN_ID) revert NotLocalPool();
+        _pushToLPGauge(vePool);
+    }
+    
+    function pushAllLPGauges() external nonReentrant {
+        _pushAllLocalLPGauges();
     }
     
     function pushVote() external nonReentrant {
@@ -342,8 +530,8 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         if (_lpPool == address(0)) revert LPPoolNotSet();
         if (_vToken == address(0)) revert VTokenNotSet();
         
-        // Check voting window (last hour of epoch)
         uint256 epochEnd = ((block.timestamp / EPOCH_DURATION) + 1) * EPOCH_DURATION;
+        uint256 votingEnd = epochEnd - 2 hours; // Wed 22-00
         if (block.timestamp < epochEnd - 1 hours || block.timestamp >= epochEnd) {
             revert VoteWindowNotOpen();
         }
@@ -385,7 +573,7 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
     
     function updateIndex(uint64 maxSteps) public returns (uint64 processedDays, bool complete) {
         uint64 currentDay = getCurrentDay();
-        uint64 _lastUpdateDay = lastUpdateDay;  // Cache
+        uint64 _lastUpdateDay = lastUpdateDay;
         uint64 _pendingDays = pendingCatchupDays;
         
         uint64 totalPending;
@@ -400,27 +588,25 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         uint64 limit = maxSteps == 0 ? MAX_CATCHUP_DAYS : maxSteps;
         uint64 daysToProcess = totalPending > limit ? limit : totalPending;
         
-        // Cache S for this update
         uint256 S = getCurrentS();
         uint256 U = (4 * S * (PRECISION - S)) / PRECISION;
         
         (uint256 totalMinted, uint128 newIndex) = _processDays(daysToProcess, U);
         
-        // Update packed slot 0
         baseIndex = newIndex;
         lastUpdateDay = _lastUpdateDay + daysToProcess;
         pendingCatchupDays = totalPending - daysToProcess;
         
         complete = (pendingCatchupDays == 0 && lastUpdateDay >= currentDay);
         
-        // Accumulate S/2 for LP gauge
-        if (totalMinted > 0 && S > 0) {
-            uint256 incentives = (totalMinted * INCENTIVES_BPS) / BPS;
-            uint256 sPortion = (incentives * S) / PRECISION;
-            accumulatedLPMeta += sPortion >> 1;
-        }
+        // Distribute S/2 C-token incentives
+        _distributeCTokenIncentives(totalMinted, S);
         
-        _pushToLPGauge();
+        // Distribute S/2 LP incentives
+        _distributeLPIncentives(totalMinted, S);
+        
+        // Push to local gauges
+        _pushAllLocalLPGauges();
         
         emit IndexUpdated(lastUpdateDay, newIndex, S, U, totalMinted);
         
@@ -431,13 +617,110 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         return (daysToProcess, complete);
     }
     
+    /**
+     * @notice Distribute S/2 portion of emissions to C-tokens
+     * @dev Phase 1: All to local C-AERO (poolAccrued)
+     *      Phase 2: VOTE_AERO to local C-AERO, rest to feeContract
+     */
+    function _distributeCTokenIncentives(uint256 totalMinted, uint256 S) internal {
+        if (totalMinted == 0 || S == 0) return;
+        
+        uint256 incentives = (totalMinted * INCENTIVES_BPS) / BPS;
+        uint256 sPortion = (incentives * S) / PRECISION;
+        uint256 cTokenPortion = sPortion >> 1;  // S/2
+        
+        if (cTokenPortion == 0) return;
+        
+        address localPool = _getLocalVEPool();
+        uint256 _totalLocked = totalLockedVotes;
+        
+        if (_totalLocked == 0) return;
+        
+        uint256 toLocalPool = 0;
+        uint256 toFeeContract = 0;
+        
+        if (multiVEEnabled) {
+            // Phase 2: Split by vote weight
+            uint256 localVotes = localPool != address(0) ? poolVotes[localPool] : 0;
+            
+            if (localVotes > 0) {
+                toLocalPool = (cTokenPortion * localVotes) / _totalLocked;
+            }
+            toFeeContract = cTokenPortion - toLocalPool;
+        } else {
+            // Phase 1: All to local C-token
+            toLocalPool = cTokenPortion;
+        }
+        
+        // EFFECTS
+        if (toLocalPool > 0 && localPool != address(0)) {
+            (uint128 poolBase, uint128 poolAcc) = _getPoolData(localPool);
+            _setPoolData(localPool, baseIndex, poolAcc + uint128(toLocalPool));
+        }
+        
+        // INTERACTIONS
+        if (toFeeContract > 0) {
+            _transfer(address(this), feeContract, toFeeContract);
+        }
+        
+        emit CTokenIncentivesDistributed(toLocalPool, toFeeContract);
+    }
+    
+    /**
+     * @notice Distribute S/2 portion of emissions to LP incentives
+     * @dev Phase 1: All to local LP gauge
+     *      Phase 2: VOTE_AERO to local LP gauge, rest to feeContract
+     */
+    function _distributeLPIncentives(uint256 totalMinted, uint256 S) internal {
+        if (totalMinted == 0 || S == 0) return;
+        
+        uint256 incentives = (totalMinted * INCENTIVES_BPS) / BPS;
+        uint256 sPortion = (incentives * S) / PRECISION;
+        uint256 lpPortion = sPortion >> 1;
+        
+        if (lpPortion == 0) return;
+        
+        address localPool = _getLocalVEPool();
+        uint256 _totalLocked = totalLockedVotes;
+        
+        if (_totalLocked == 0) return;
+        
+        uint256 toLocalGauge = 0;
+        uint256 toFeeContract = 0;
+        
+        if (multiVEEnabled) {
+            // Phase 2: Split by vote weight
+            uint256 localVotes = localPool != address(0) ? poolVotes[localPool] : 0;
+            
+            if (localVotes > 0) {
+                toLocalGauge = (lpPortion * localVotes) / _totalLocked;
+            }
+            toFeeContract = lpPortion - toLocalGauge;
+        } else {
+            // Phase 1: All to local LP
+            toLocalGauge = lpPortion;
+        }
+        
+        // EFFECTS
+        if (toLocalGauge > 0 && localPool != address(0)) {
+            poolLPAccruedMeta[localPool] += toLocalGauge;
+        }
+        
+        // INTERACTIONS
+        if (toFeeContract > 0) {
+            _transfer(address(this), feeContract, toFeeContract);
+        }
+        
+        emit LPIncentivesDistributed(toLocalGauge, toFeeContract);
+    }
+    
     function updateIndex() external returns (uint64, bool) {
         return updateIndex(0);
     }
     
     function _processDays(uint64 daysToProcess, uint256 U) internal returns (uint256 totalMinted, uint128 newIndex) {
         uint128 P = baseIndex;
-        uint256 _remainingSupply = remainingSupply;  // Cache
+        uint256 _remainingSupply = remainingSupply;
         
         for (uint64 i = 0; i < daysToProcess; ) {
             uint256 oneMinusP = PRECISION - uint256(P);
@@ -467,7 +750,7 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
             unchecked { ++i; }
         }
         
-        remainingSupply = _remainingSupply;  // Write back
+        remainingSupply = _remainingSupply;
         newIndex = P;
     }
     
@@ -476,20 +759,15 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
     // ════════════════════════════════════════════════════════════════════════
     
     function lockAndVote(uint256 amount, address vePool) external nonReentrant {
-        // CHECKS
         if (amount == 0) revert ZeroAmount();
         if (!isWhitelistedVEPool[vePool]) revert PoolNotWhitelisted();
-        if (userUnlockTime[msg.sender] != 0) revert CurrentlyUnlocking();
         
         uint256 existingLock = userLockedAmount[msg.sender];
         if (existingLock > 0 && userVotedPool[msg.sender] != vePool) {
             revert MustUnlockToChangePool();
         }
         
-        // Ensure index current
         _ensureIndexUpdated();
-        
-        // EFFECTS - Checkpoint and update state
         _checkpointUser(msg.sender);
         
         if (existingLock == 0) {
@@ -499,63 +777,62 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         userLockedAmount[msg.sender] = existingLock + amount;
         userVotedPool[msg.sender] = vePool;
         
-        // Update pool
-        _checkpointPool(vePool);
-        (uint128 poolBase, uint128 poolAcc) = _getPoolData(vePool);
-        if (poolBase == 0) {
-            _setPoolData(vePool, baseIndex, poolAcc);
-        }
+        _syncPoolBaseline(vePool);
         poolVotes[vePool] += amount;
         totalLockedVotes += amount;
         
-        // INTERACTIONS
         _transfer(msg.sender, address(this), amount);
         
         emit Locked(msg.sender, amount, vePool);
     }
     
-    function initiateUnlock() external nonReentrant {
-        // CHECKS
-        uint256 amount = userLockedAmount[msg.sender];
-        if (amount == 0) revert NothingLocked();
+    function initiateUnlock(uint256 amount) external nonReentrant {
+        uint256 locked = userLockedAmount[msg.sender];
+        uint256 alreadyUnlocking = userUnlockingAmount[msg.sender];
+        
+        if (amount == 0) revert ZeroAmount();
+        if (locked == 0) revert NothingLocked();
         if (userUnlockTime[msg.sender] != 0) revert CurrentlyUnlocking();
+        if (amount > locked - alreadyUnlocking) revert ExceedsAvailable();
         
         _ensureIndexUpdated();
-        
-        // EFFECTS
         _checkpointUser(msg.sender);
-        _checkpointPool(userVotedPool[msg.sender]);
+        _syncPoolBaseline(userVotedPool[msg.sender]);
         
+        userUnlockingAmount[msg.sender] = amount;
         uint256 unlockTime = ((block.timestamp / 1 days) * 1 days) + 2 days + 1 minutes;
         userUnlockTime[msg.sender] = unlockTime;
+        totalUnlocking += amount;
         
         emit UnlockInitiated(msg.sender, amount, unlockTime);
     }
     
     function completeUnlock() external nonReentrant {
-        // CHECKS
         uint256 unlockTime = userUnlockTime[msg.sender];
         if (unlockTime == 0) revert NotUnlocking();
         if (block.timestamp < unlockTime) revert StillCoolingDown();
         
         _ensureIndexUpdated();
         
-        uint256 amount = userLockedAmount[msg.sender];
+        uint256 amount = userUnlockingAmount[msg.sender];
         address vePool = userVotedPool[msg.sender];
         
-        // EFFECTS
         _checkpointUser(msg.sender);
-        _checkpointPool(vePool);
+        _syncPoolBaseline(vePool);
         
         poolVotes[vePool] -= amount;
         totalLockedVotes -= amount;
+        totalUnlocking -= amount;
         
-        userLockedAmount[msg.sender] = 0;
-        userVotedPool[msg.sender] = address(0);
+        userLockedAmount[msg.sender] -= amount;
+        userUnlockingAmount[msg.sender] = 0;
         userUnlockTime[msg.sender] = 0;
-        _setUserBaselines(msg.sender, 0, 0);
         
-        // INTERACTIONS
+        if (userLockedAmount[msg.sender] == 0) {
+            userVotedPool[msg.sender] = address(0);
+            _setUserBaselines(msg.sender, 0, 0);
+        }
+        
         _transfer(address(this), msg.sender, amount);
         
         emit Unlocked(msg.sender, amount);
@@ -584,7 +861,7 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         uint128 _baseIndex = baseIndex;
         uint128 _feeIndex = feeRewardIndex;
         
-        // META rewards: (1-S) portion
+        // User gets (1-S) portion of incentives
         if (_baseIndex > metaBase) {
             uint256 deltaIndex = uint256(_baseIndex) - uint256(metaBase);
             uint256 S = getCurrentS();
@@ -595,7 +872,6 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
             userAccrued[user] += (TOTAL_SUPPLY * userShare) / PRECISION;
         }
         
-        // AERO fee rewards
         if (_feeIndex > feeBase) {
             uint256 feeDelta = uint256(_feeIndex) - uint256(feeBase);
             userFeeAccrued[user] += (feeDelta * locked) / PRECISION;
@@ -604,45 +880,31 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         _setUserBaselines(user, _baseIndex, _feeIndex);
     }
     
-    function _checkpointPool(address vePool) internal {
+    /**
+     * @notice Sync pool baseline to current index
+     * @dev Only syncs baseline - incentive distribution happens in updateIndex
+     *      This prevents double-counting and keeps distribution centralized
+     */
+    function _syncPoolBaseline(address vePool) internal {
         if (!isWhitelistedVEPool[vePool]) return;
-        
-        uint256 _totalLocked = totalLockedVotes;
-        uint256 votes = poolVotes[vePool];
-        if (_totalLocked == 0 || votes == 0) return;
+        if (vePoolChainId[vePool] != LOCAL_CHAIN_ID) return;  // Only local pools
         
         (uint128 poolBase, uint128 poolAcc) = _getPoolData(vePool);
-        if (poolBase == 0) poolBase = I_INITIAL;
-        
         uint128 _baseIndex = baseIndex;
-        if (_baseIndex <= poolBase) return;
         
-        uint256 deltaIndex = uint256(_baseIndex) - uint256(poolBase);
-        
-        // S/2 portion for VE pools
-        uint256 S = getCurrentS();
-        uint256 incentivesDelta = (deltaIndex * INCENTIVES_BPS) / BPS;
-        uint256 sPortion = (incentivesDelta * S) / PRECISION;
-        uint256 vePoolPortion = sPortion >> 1;
-        
-        uint256 poolShare = (vePoolPortion * votes) / _totalLocked;
-        uint256 poolTokens = (TOTAL_SUPPLY * poolShare) / PRECISION;
-        
-        _setPoolData(vePool, _baseIndex, poolAcc + uint128(poolTokens));
+        if (_baseIndex > poolBase) {
+            _setPoolData(vePool, _baseIndex, poolAcc);
+        }
     }
     
     // ════════════════════════════════════════════════════════════════════════
     // CLAIMS (CEI COMPLIANT)
     // ════════════════════════════════════════════════════════════════════════
     
-    /**
-     * @notice Claim both META and AERO rewards
-     */
     function claimRewards() external nonReentrant returns (uint256 metaAmt, uint256 aeroAmt) {
         _ensureIndexUpdated();
         _checkpointUser(msg.sender);
         
-        // EFFECTS
         metaAmt = userAccrued[msg.sender];
         aeroAmt = userFeeAccrued[msg.sender];
         
@@ -653,12 +915,11 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         }
         
         if (aeroAmt > 0) {
-            uint256 aeroAvail = AERO.balanceOf(address(this)) - accumulatedLPAero;
+            uint256 aeroAvail = AERO.balanceOf(address(this)) - _totalPoolFeeAccrued();
             if (aeroAmt > aeroAvail) aeroAmt = aeroAvail;
             userFeeAccrued[msg.sender] = 0;
         }
         
-        // INTERACTIONS
         if (metaAmt > 0) {
             _transfer(address(this), msg.sender, metaAmt);
         }
@@ -669,9 +930,6 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         emit RewardsClaimed(msg.sender, metaAmt, aeroAmt);
     }
     
-    /**
-     * @notice Backward compatible claim (returns META only)
-     */
     function claimStakerRewards() external nonReentrant returns (uint256 amount) {
         _ensureIndexUpdated();
         _checkpointUser(msg.sender);
@@ -682,17 +940,15 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         uint256 avail = balanceOf(address(this));
         if (amount > avail) amount = avail;
         
-        // EFFECTS
         userAccrued[msg.sender] = 0;
         
         uint256 aeroAmt = userFeeAccrued[msg.sender];
         if (aeroAmt > 0) {
-            uint256 aeroAvail = AERO.balanceOf(address(this)) - accumulatedLPAero;
+            uint256 aeroAvail = AERO.balanceOf(address(this)) - _totalPoolFeeAccrued();
             if (aeroAmt > aeroAvail) aeroAmt = aeroAvail;
             userFeeAccrued[msg.sender] = 0;
         }
         
-        // INTERACTIONS
         _transfer(address(this), msg.sender, amount);
         if (aeroAmt > 0) {
             AERO.safeTransfer(msg.sender, aeroAmt);
@@ -702,16 +958,17 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
     }
     
     /**
-     * @notice VE pool claims its META allocation (S/2 portion)
+     * @notice VE pool claims its META allocation (S/2 portion of emissions)
+     * @dev For local pools only. Remote pools claim from feeContract.
      */
     function claimForVEPool() external nonReentrant returns (uint256 amount) {
         address vePool = msg.sender;
         
-        // CHECKS
         if (!isWhitelistedVEPool[vePool]) revert OnlyPool();
+        if (vePoolChainId[vePool] != LOCAL_CHAIN_ID) revert NotLocalPool();
         
         _ensureIndexUpdated();
-        _checkpointPool(vePool);
+        _syncPoolBaseline(vePool);
         
         (uint128 poolBase, uint128 poolAcc) = _getPoolData(vePool);
         amount = uint256(poolAcc);
@@ -720,19 +977,37 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         uint256 avail = balanceOf(address(this));
         if (amount > avail) amount = avail;
         
-        // EFFECTS
         _setPoolData(vePool, poolBase, 0);
-        
-        // INTERACTIONS
         _transfer(address(this), vePool, amount);
         
         emit VEPoolClaimed(vePool, amount);
     }
     
+    /**
+     * @notice VE pool claims its AERO fee allocation
+     * @dev Only for local (Base) pools. Remote pools get native fees locally.
+     */
+    function claimFeesForVEPool() external nonReentrant returns (uint256 amount) {
+        address vePool = msg.sender;
+        
+        if (!isWhitelistedVEPool[vePool]) revert OnlyPool();
+        if (vePoolChainId[vePool] != LOCAL_CHAIN_ID) revert NotLocalPool();
+        
+        amount = poolFeeAccrued[vePool];
+        if (amount == 0) return 0;
+        
+        uint256 avail = AERO.balanceOf(address(this));
+        if (amount > avail) amount = avail;
+        
+        poolFeeAccrued[vePool] = 0;
+        AERO.safeTransfer(vePool, amount);
+        
+        emit VEPoolFeesClaimed(vePool, amount);
+    }
+    
     function claimTreasury() external nonReentrant returns (uint256 amount) {
         _ensureIndexUpdated();
         
-        // Checkpoint treasury
         uint128 _baseIndex = baseIndex;
         if (_baseIndex > treasuryBaselineIndex) {
             uint256 deltaIndex = uint256(_baseIndex) - uint256(treasuryBaselineIndex);
@@ -747,10 +1022,7 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         uint256 avail = balanceOf(address(this));
         if (amount > avail) amount = avail;
         
-        // EFFECTS
         treasuryAccrued = 0;
-        
-        // INTERACTIONS
         _transfer(address(this), TREASURY, amount);
         
         emit TreasuryClaimed(TREASURY, amount);
@@ -760,35 +1032,53 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
     // VE POOL MANAGEMENT
     // ════════════════════════════════════════════════════════════════════════
     
-    function addVEPool(address vePool, uint256 chainId) external onlyMSIG {
+    /**
+     * @notice Add a VE pool on a specific chain
+     * @param vePool The C-token address (C-AERO, C-VELO, etc.)
+     * @param chainId Chain where the VE system lives
+     * @param lpGauge_ LP gauge address (only meaningful for local pools)
+     */
+    function addVEPool(address vePool, uint256 chainId, address lpGauge_) external onlyMSIG {
         if (vePool == address(0)) revert ZeroAddress();
         if (isWhitelistedVEPool[vePool]) revert AlreadyWhitelisted();
+        if (chainId != LOCAL_CHAIN_ID && !isWhitelistedChain[chainId]) revert ChainNotWhitelisted();
         
         isWhitelistedVEPool[vePool] = true;
         vePoolList.push(vePool);
         vePoolChainId[vePool] = chainId;
+        poolLPGauge[vePool] = lpGauge_;
         _setPoolData(vePool, baseIndex, 0);
         
-        emit VEPoolAdded(vePool, chainId);
+        emit VEPoolAdded(vePool, chainId, lpGauge_);
     }
     
-    function addVEPool(address vePool) external onlyMSIG {
+    /**
+     * @notice Add a local (Base) VE pool
+     */
+    function addVEPool(address vePool, address lpGauge_) external onlyMSIG {
         if (vePool == address(0)) revert ZeroAddress();
         if (isWhitelistedVEPool[vePool]) revert AlreadyWhitelisted();
         
         isWhitelistedVEPool[vePool] = true;
         vePoolList.push(vePool);
-        vePoolChainId[vePool] = block.chainid;
+        vePoolChainId[vePool] = LOCAL_CHAIN_ID;
+        poolLPGauge[vePool] = lpGauge_;
         _setPoolData(vePool, baseIndex, 0);
         
-        emit VEPoolAdded(vePool, block.chainid);
+        emit VEPoolAdded(vePool, LOCAL_CHAIN_ID, lpGauge_);
     }
     
     function removeVEPool(address vePool) external onlyMSIG {
         if (!isWhitelistedVEPool[vePool]) revert NotWhitelisted();
         if (poolVotes[vePool] > 0) revert PoolHasActiveVotes();
         
+        // Push any remaining LP rewards for local pools
+        if (vePoolChainId[vePool] == LOCAL_CHAIN_ID) {
+            _pushToLPGauge(vePool);
+        }
+        
         isWhitelistedVEPool[vePool] = false;
+        poolLPGauge[vePool] = address(0);
         
         uint256 len = vePoolList.length;
         for (uint256 i = 0; i < len; ) {
@@ -807,18 +1097,40 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
     // VIEW FUNCTIONS
     // ════════════════════════════════════════════════════════════════════════
     
+    function _totalPoolFeeAccrued() internal view returns (uint256 total) {
+        uint256 len = vePoolList.length;
+        for (uint256 i = 0; i < len; ) {
+            total += poolFeeAccrued[vePoolList[i]];
+            unchecked { ++i; }
+        }
+    }
+    
     function getVEPools() external view returns (address[] memory) {
         return vePoolList;
     }
     
+    function getChainList() external view returns (uint256[] memory) {
+        return chainList;
+    }
+    
+    function isRemotePool(address vePool) external view returns (bool) {
+        return isWhitelistedVEPool[vePool] && vePoolChainId[vePool] != LOCAL_CHAIN_ID;
+    }
+    
+    function isLocalPool(address vePool) external view returns (bool) {
+        return isWhitelistedVEPool[vePool] && vePoolChainId[vePool] == LOCAL_CHAIN_ID;
+    }
+    
     function getUserInfo(address user) external view returns (
         uint256 lockedAmount,
+        uint256 unlockingAmount,
         address votedPool,
         uint256 unlockTime,
         uint256 pendingMeta,
         uint256 pendingAero
     ) {
         lockedAmount = userLockedAmount[user];
+        unlockingAmount = userUnlockingAmount[user];
         votedPool = userVotedPool[user];
         unlockTime = userUnlockTime[user];
         pendingMeta = userAccrued[user];
@@ -844,32 +1156,30 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         }
     }
     
+    function getAvailableToUnlock(address user) external view returns (uint256 available) {
+        uint256 locked = userLockedAmount[user];
+        uint256 unlocking = userUnlockingAmount[user];
+        available = locked > unlocking ? locked - unlocking : 0;
+    }
+    
     function getPoolInfo(address vePool) external view returns (
         bool whitelisted,
         uint256 votes,
         uint256 pendingRewards,
-        uint256 chainId
+        uint256 chainId,
+        address lpGauge_,
+        uint256 pendingLPMeta,
+        uint256 pendingFees
     ) {
         whitelisted = isWhitelistedVEPool[vePool];
         votes = poolVotes[vePool];
         chainId = vePoolChainId[vePool];
+        lpGauge_ = poolLPGauge[vePool];
+        pendingLPMeta = poolLPAccruedMeta[vePool];
+        pendingFees = poolFeeAccrued[vePool];
         
-        (uint128 poolBase, uint128 poolAcc) = _getPoolData(vePool);
+        (, uint128 poolAcc) = _getPoolData(vePool);
         pendingRewards = uint256(poolAcc);
-        
-        if (whitelisted && totalLockedVotes > 0 && votes > 0) {
-            if (poolBase == 0) poolBase = I_INITIAL;
-            
-            if (baseIndex > poolBase) {
-                uint256 deltaIndex = uint256(baseIndex) - uint256(poolBase);
-                uint256 S = getCurrentS();
-                uint256 incentivesDelta = (deltaIndex * INCENTIVES_BPS) / BPS;
-                uint256 sPortion = (incentivesDelta * S) / PRECISION;
-                uint256 vePoolPortion = sPortion >> 1;
-                uint256 poolShare = (vePoolPortion * votes) / totalLockedVotes;
-                pendingRewards += (TOTAL_SUPPLY * poolShare) / PRECISION;
-            }
-        }
     }
     
     function getCatchupStatus() external view returns (
@@ -887,17 +1197,42 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         needsUpdate = pendingDays > 0;
     }
     
-    function getLPGaugeInfo() external view returns (
-        address pool,
+    function getLPGaugeInfo(address vePool) external view returns (
         address gauge,
-        bool locked,
-        uint256 pendingMeta,
-        uint256 pendingAero
+        uint256 pendingMeta
     ) {
-        return (lpPool, lpGauge, lpGaugeLocked, accumulatedLPMeta, accumulatedLPAero);
+        return (poolLPGauge[vePool], poolLPAccruedMeta[vePool]);
     }
     
-    // Legacy view functions for compatibility
+    function getCrossChainStatus() external view returns (
+        bool proofVerifierSet,
+        uint256 whitelistedChainCount,
+        uint256 localPoolCount,
+        uint256 remotePoolCount
+    ) {
+        proofVerifierSet = l1ProofVerifier != address(0);
+        whitelistedChainCount = chainList.length;
+        
+        uint256 len = vePoolList.length;
+        for (uint256 i = 0; i < len; ) {
+            if (vePoolChainId[vePoolList[i]] == LOCAL_CHAIN_ID) {
+                localPoolCount++;
+            } else {
+                remotePoolCount++;
+            }
+            unchecked { ++i; }
+        }
+    }
+    
+    function getMultiVEStatus() external view returns (
+        bool enabled,
+        address feeContract_
+    ) {
+        enabled = multiVEEnabled;
+        feeContract_ = feeContract;
+    }
+    
+    // Legacy view functions
     function userBaselineIndex(address user) external view returns (uint128) {
         (uint128 metaBase, ) = _getUserBaselines(user);
         return metaBase;
