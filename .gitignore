@@ -25,8 +25,5 @@ broadcast/
 *.key
 *.pem
 
-# OS
-.DS_Store
-
 # Node (if any)
 node_modules/
