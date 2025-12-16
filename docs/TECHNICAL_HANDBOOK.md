@@ -1272,7 +1272,7 @@ event UnlockInitiated(address indexed user, uint256 amount, uint256 unlockTime);
 
 | Pool | Address |
 |------|---------|
-| META-AERO LP | `0x0d104dcc18004ebdab2cad67acacbf6986d8a5d5` |
+| META-AERO LP | Not yet created (TODO) |
 | LP Gauge | Not yet created (Aerodrome governance) |
 
 ### 14.6 External Dependencies (Aerodrome)

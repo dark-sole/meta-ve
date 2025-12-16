@@ -65,10 +65,10 @@ Meta.addVEPool(splitter, address(0))  // NOW WORKS!
 | Pools Per Slot | 4 |
 | Max Weight | 50 |
 
-### LP Pool (Created)
+### LP Pool (TODO)
 | Parameter | Value |
 |-----------|-------|
-| META-AERO Pool | `0x0d104dcc18004ebdab2cad67acacbf6986d8a5d5` |
+| META-AERO Pool | '**' |
 | Gauge | Not yet created |
 
 ---
@@ -112,7 +112,7 @@ VEAERO_LIQUIDATION=0x289d982DA03d7DA73EE88F0de8799eBF5B7672cc
 VEAERO_BRIBES=0x67be8b66c65FC277e86990F7F36b21bdE4e1dE4E
 VOTE_LIB=0x16a6359d45386eD4a26458558A0542B826Bb72c0
 VEAERO_SPLITTER=0xf47Ece65481f0709e78c58f802d8e76B20fd4361
-LP_POOL=0x0d104dcc18004ebdab2cad67acacbf6986d8a5d5
+LP_POOL=
 ```
 
 ---
@@ -140,7 +140,7 @@ Meta.addVEPool(0x07b3a3c5f5B9dAd9b36fC6Faa40fd4bFBcC4aA4E, address(0))  // CToke
 ### Phase 5 (Optional): Set LP Pool
 
 ```solidity
-Meta.setLPPool(0x0d104dcc18004ebdab2cad67acacbf6986d8a5d5)
+Meta.setLPPool()
 ```
 
 **Calldata:**
