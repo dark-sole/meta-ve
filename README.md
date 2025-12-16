@@ -1,4 +1,4 @@
-# META Protocol V8
+# META-VE Protocol
 
 Tokenisys META Protocol - veAERO tokenization on Base.
 
@@ -22,6 +22,8 @@ Tokenisys META Protocol - veAERO tokenization on Base.
 - [Multi-Chain Architecture](docs/META_MultiChain_Architecture.md)
 - [Test Results](docs/TEST_RESULTS.md)
 - [Draft Guide (PDF)](docs/Meta_1225_DRAFT_GUIDE.pdf)
+- [Function Reference](docs/COMPLETE_FUNCTION_REFERENCE.md)
+- [Teaser](docs/META_VE_OnePager.html)
 
 ## Directory Structure
 
