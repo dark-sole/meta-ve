@@ -7,7 +7,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./Interfaces.sol";
 
 /**
- * @title VeAeroBribes
+ * @title VeAeroBribes V.BETA.1
  * @notice Handles bribe snapshot and claim logic for VeAeroSplitter
  * @dev Separated from VeAeroSplitter to meet EIP-170 size limit
  *      
@@ -29,6 +29,7 @@ contract VeAeroBribes {
     // ═══════════════════════════════════════════════════════════════
     
     uint256 public constant PRECISION = 1e18;
+    uint256 public constant CLAIM_WINDOW_BUFFER = 1 hours;
     
     // ═══════════════════════════════════════════════════════════════
     // IMMUTABLES
@@ -37,6 +38,7 @@ contract VeAeroBribes {
     IVeAeroSplitterBribes public immutable SPLITTER;
     IVToken public immutable V_TOKEN;
     address public immutable TOKENISYS;
+    address public immutable META;
     
     // ═══════════════════════════════════════════════════════════════
     // STATE
@@ -61,7 +63,6 @@ contract VeAeroBribes {
     event EpochSnapshotSet(uint256 totalPower, uint256 epoch);
     event BribesClaimed(address indexed user, address[] tokens, uint256[] amounts);
     event BribeTokenRegistered(address indexed token, uint256 ratio, uint256 epoch);
-    event UnclaimedBribesSwept(address indexed token, uint256 amount);
     
     // ═══════════════════════════════════════════════════════════════
     // ERRORS
@@ -72,9 +73,10 @@ contract VeAeroBribes {
     error NoLockedBalance();
     error NoSnapshotLastEpoch();
     error AlreadyClaimedBribes();
-    error WindowNotExpired();
     error LiquidationInProgress();
     error ZeroAddress();
+    error VoteNotExecuted();
+    error ClaimWindowClosed();
     
     // ═══════════════════════════════════════════════════════════════
     // CONSTRUCTOR
@@ -83,15 +85,18 @@ contract VeAeroBribes {
     constructor(
         address _splitter,
         address _vToken,
-        address _tokenisys
+        address _tokenisys,
+        address _meta
     ) {
         if (_splitter == address(0)) revert ZeroAddress();
         if (_vToken == address(0)) revert ZeroAddress();
         if (_tokenisys == address(0)) revert ZeroAddress();
+        if (_meta == address(0)) revert ZeroAddress();
         
         SPLITTER = IVeAeroSplitterBribes(_splitter);
         V_TOKEN = IVToken(_vToken);
         TOKENISYS = _tokenisys;
+        META = _meta;
     }
         
     // ═══════════════════════════════════════════════════════════════
@@ -109,6 +114,9 @@ contract VeAeroBribes {
         
         // Check not in liquidation
         if (SPLITTER.isLiquidationActive()) revert LiquidationInProgress();
+
+        // Must wait for executeGaugeVote() to be called first
+        if (!SPLITTER.voteExecutedThisEpoch()) revert VoteNotExecuted();
         
         // Window: after voting ends, before epoch ends
         if (block.timestamp <= votingEndTime) revert SnapshotWindowClosed();
@@ -123,7 +131,9 @@ contract VeAeroBribes {
         
         // Set epoch snapshot total on first snapshot of epoch
         if (epochSnapshotEpoch != currentEpoch) {
-            epochSnapshotTotal = SPLITTER.totalVLockedForVoting();
+            uint256 totallocked = SPLITTER.cachedTotalVLockedForVoting();
+            uint256 metalocked = V_TOKEN.currentLockedAmount(META) / PRECISION;
+            epochSnapshotTotal = totallocked - metalocked;
             epochSnapshotEpoch = currentEpoch;
             emit EpochSnapshotSet(epochSnapshotTotal, currentEpoch);
         }
@@ -146,7 +156,11 @@ contract VeAeroBribes {
      */
     function claimBribes(address[] calldata tokens) external {
         uint256 currentEpoch = SPLITTER.currentEpoch();
-        
+        uint256 epochEndTime = SPLITTER.epochEndTime();
+
+        // Cannot claim in last hour of epoch (Tokenisys sweep window)
+        if (block.timestamp > epochEndTime - CLAIM_WINDOW_BUFFER) revert ClaimWindowClosed();
+    
         // Must have snapshotted last epoch
         if (snapshotEpoch[msg.sender] != currentEpoch - 1) revert NoSnapshotLastEpoch();
         
@@ -191,37 +205,6 @@ contract VeAeroBribes {
     }
     
     // ═══════════════════════════════════════════════════════════════
-    // SWEEP
-    // ═══════════════════════════════════════════════════════════════
-    
-    /**
-     * @notice Sweep unclaimed bribes to treasury after epoch ends
-     * @param tokens Array of bribe token addresses to sweep
-     */
-    function sweepUnclaimedBribes(address[] calldata tokens) external {
-        uint256 currentEpoch = SPLITTER.currentEpoch();
-        uint256 epochEndTime = SPLITTER.epochEndTime();
-        
-        // Can only sweep after epoch ends
-        if (block.timestamp < epochEndTime) revert WindowNotExpired();
-        
-        for (uint256 i = 0; i < tokens.length; i++) {
-            address token = tokens[i];
-            
-            // Validate whitelist via Splitter
-            if (!SPLITTER.isWhitelistedBribe(token)) continue;
-            if (SPLITTER.bribeWhitelistEpoch(token) != currentEpoch) continue;
-            
-            // Get remaining balance and sweep to Tokenisys
-            uint256 balance = IERC20(token).balanceOf(address(SPLITTER));
-            if (balance > 0) {
-                SPLITTER.pullBribeToken(token, TOKENISYS, balance);
-                emit UnclaimedBribesSwept(token, balance);
-            }
-        }
-    }
-    
-    // ═══════════════════════════════════════════════════════════════
     // VIEW FUNCTIONS
     // ═══════════════════════════════════════════════════════════════
     
@@ -236,7 +219,7 @@ contract VeAeroBribes {
         return block.timestamp > votingEndTime && 
                block.timestamp < epochEndTime &&
                snapshotEpoch[user] != currentEpoch &&
-               V_TOKEN.lockedAmount(user) > 0;
+               V_TOKEN.currentLockedAmount(user) > 0;
     }
     
     /**
@@ -246,6 +229,10 @@ contract VeAeroBribes {
      */
     function pendingBribes(address user, address token) external view returns (uint256) {
         uint256 currentEpoch = SPLITTER.currentEpoch();
+        uint256 epochEndTime = SPLITTER.epochEndTime();
+
+        // Past claim deadline
+        if (block.timestamp > epochEndTime - CLAIM_WINDOW_BUFFER) return 0;
         
         // Must have snapshotted last epoch
         if (snapshotEpoch[user] != currentEpoch - 1) return 0;
@@ -282,6 +269,8 @@ interface IVeAeroSplitterBribes {
     function votingEndTime() external view returns (uint256);
     function epochEndTime() external view returns (uint256);
     function totalVLockedForVoting() external view returns (uint256);
+    function cachedTotalVLockedForVoting() external view returns (uint256);
+    function voteExecutedThisEpoch() external view returns (bool);
     function isWhitelistedBribe(address token) external view returns (bool);
     function bribeWhitelistEpoch(address token) external view returns (uint256);
     function isLiquidationActive() external view returns (bool);

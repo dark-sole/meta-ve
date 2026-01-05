@@ -4,7 +4,7 @@
 pragma solidity ^0.8.24;
 
 /**
- * @title L1ProofVerifier
+ * @title L1ProofVerifier V.BETA.1
  * @notice Verifies cross-L2 state via L1 Ethereum state proofs
  * @dev Used on Base to verify state from other L2s (Optimism, Arbitrum)
  * 

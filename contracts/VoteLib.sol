@@ -4,7 +4,7 @@
 pragma solidity ^0.8.24;
 
 /**
- * @title VoteLib
+ * @title VoteLib V.BETA.1
  * @notice Distributes votes across multiple NFTs when >30 pools voted
  * @dev Pure calculation contract - no state, external calls only
  * 

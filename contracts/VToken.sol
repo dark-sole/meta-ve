@@ -11,7 +11,7 @@ import "./DynamicGaugeVoteStorage.sol";
 import "./DynamicPoolRegistry.sol";
 
 /**
- * @title VToken (V-AERO) V6
+ * @title VToken (V-AERO) V.BETA.1
  * @notice Voting rights token for veAERO wrapper - 18 decimals
  */
 contract VToken is ERC20, Ownable, ReentrancyGuard {
@@ -24,7 +24,7 @@ contract VToken is ERC20, Ownable, ReentrancyGuard {
     // ═══════════════════════════════════════════════════════════════
     
     error OnlySplitter();
-    error SplitterAlreadySet();
+    error AlreadySet();
     error ZeroAddress();
     error ZeroAmount();
     error InsufficientUnlockedBalance();
@@ -32,7 +32,6 @@ contract VToken is ERC20, Ownable, ReentrancyGuard {
     error VotingNotStarted();
     error VotingEnded();
     error MustVoteWholeTokens();
-    error LiquidationAlreadySet();
     error StorageNotConfigured();
     error InvalidGauge();
 
@@ -120,14 +119,14 @@ contract VToken is ERC20, Ownable, ReentrancyGuard {
      */
     function setSplitter(address _splitter) external onlyOwner {
         if (_splitter == address(0)) revert ZeroAddress();
-        if (splitter != address(0)) revert SplitterAlreadySet();
+        if (splitter != address(0)) revert AlreadySet();
         splitter = _splitter;
         emit SplitterSet(_splitter);
     }
 
     function setLiquidation(address _liquidation) external onlyOwner {
         if (_liquidation == address(0)) revert ZeroAddress();
-        if (liquidation != address(0)) revert LiquidationAlreadySet();
+        if (liquidation != address(0)) revert AlreadySet();
         liquidation = _liquidation;
         emit LiquidationSet(_liquidation);
     }
@@ -486,8 +485,15 @@ contract VToken is ERC20, Ownable, ReentrancyGuard {
     function totalPassiveVotes() external view returns (uint256) {
         return _totalPassiveVotes * 1e18;  // Already stored as whole tokens
     }
-
-
+    /**
+    * @notice Get user's currently locked amount (0 if lock expired)
+    * @param user Address to check
+    * @return Locked amount, or 0 if lock has expired
+    */
+    function currentLockedAmount(address user) external view returns (uint256) {
+        if (block.timestamp >= lockedUntil[user]) return 0;
+        return lockedAmount[user];
+    }
     
     // ═══════════════════════════════════════════════════════════════
     // TRANSFER RESTRICTIONS

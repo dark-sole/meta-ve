@@ -1,0 +1,87 @@
+{
+  "chainId": 8453,
+  "network": "Base Mainnet",
+  "deployment": "GAMMA (January 5, 2026)",
+  "genesisTime": 1767571200,
+  "genesisDate": "2026-01-04T00:00:00Z",
+  "deploymentBlock": 40414704,
+  "deploymentTxHash": "0x1c63aa1f145dda7b45f3ce87c41d5d429fae9184a424c1b2bee737aebc2314a0",
+  
+  "contracts": {
+    "VToken": "0x2B214E99050db935FBF3479E8629B2E3078DF61a",
+    "CToken": "0x616cCBC180ed0b7C4121f7551DC6C262f749b2cD",
+    "RToken": "0x0Db78Bb35f58b6A591aCc6bbAEf6dD57C5Ea1908",
+    "Meta": "0xC4Dfb91cc97ef36D171F761ab15EdE9bbc2EE051",
+    "VeAeroLiquidation": "0xad608ecD3b506EB35f706bBb67D817aCe873B8eB",
+    "VeAeroBribes": "0xe3c012c9A8Cd0BafEcd60f72Bb9Cc49662d3FcDB",
+    "VoteLib": "0x2dE16D98569c6CB352F80fc6024F5C86F3Ef47c5",
+    "EmissionsVoteLib": "0x5a301a802B0C4BD5389E3Dc31eeB54cf37c65324",
+    "VeAeroSplitter": "0x341f394086D6877885fD2cC966904BDFc2620aBf"
+  },
+  
+  "external": {
+    "AERO": "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
+    "VotingEscrow": "0xeBf418Fe2512e7E6bd9b87a8F0f294aCDC67e6B4",
+    "AerodromeVoter": "0x16613524e02ad97eDfeF371bC883F2F5d6C480A5",
+    "EpochGovernor": "0xC7150B9909DFfCB5e12E4Be6999D6f4b827eE497"
+  },
+  
+  "roles": {
+    "Tokenisys": "0x432E67d6adF9bD3d42935947E00bF519ecCaA5cB",
+    "Treasury": "0xF25a1bB1c463df34E3258ac090e8Fc0895AEC528",
+    "MetaMSIG": "0xA50b0109E44233721e427CFB8485F2254E652636",
+    "LiquidationMSIG": "0xCF4b81611228ec9bD3dCF264B4bD0BF37283D24D",
+    "Deployer": "0x87dD4984c56Bb94D2592F7644fa66f8611864709"
+  },
+
+  "gammaFeatures": {
+    "transferSettlement": "sweep on amount, not balance",
+    "recipientCheckpoint": "blended with round-UP",
+    "selfTransferGuard": true,
+    "formalVerification": "62/62 properties proven",
+    "CTokenAeroFees": true,
+    "decoupledResetEpoch": true,
+    "emissionsVoteLib": true,
+    "bribeSweepWindow": true,
+    "metaExclusionFromBribes": true,
+    "cachedTotalVLockedForVoting": true
+  },
+
+  "verification": {
+    "ownership": {
+      "VToken": "0xA50b0109E44233721e427CFB8485F2254E652636",
+      "CToken": "0xA50b0109E44233721e427CFB8485F2254E652636",
+      "RToken": "0xA50b0109E44233721e427CFB8485F2254E652636",
+      "VeAeroSplitter": "0xA50b0109E44233721e427CFB8485F2254E652636",
+      "EmissionsVoteLib": "0xA50b0109E44233721e427CFB8485F2254E652636",
+      "Meta_owner": "0xA50b0109E44233721e427CFB8485F2254E652636",
+      "Meta_msigTreasury": "0xA50b0109E44233721e427CFB8485F2254E652636"
+    },
+    "immutables": {
+      "Meta_TOKENISYS": "0x432E67d6adF9bD3d42935947E00bF519ecCaA5cB",
+      "Meta_TREASURY": "0xF25a1bB1c463df34E3258ac090e8Fc0895AEC528",
+      "Splitter_TOKENISYS": "0x432E67d6adF9bD3d42935947E00bF519ecCaA5cB"
+    },
+    "wiring": {
+      "CToken_emissionsVoteLib": "0x5a301a802B0C4BD5389E3Dc31eeB54cf37c65324",
+      "Splitter_emissionsVoteLib": "0x5a301a802B0C4BD5389E3Dc31eeB54cf37c65324",
+      "Bribes_META": "0xC4Dfb91cc97ef36D171F761ab15EdE9bbc2EE051"
+    },
+    "whitelist": {
+      "CToken_whitelisted": true,
+      "CToken_chainId": 8453
+    }
+  },
+
+  "basescan": {
+    "VToken": "https://basescan.org/address/0x2B214E99050db935FBF3479E8629B2E3078DF61a",
+    "CToken": "https://basescan.org/address/0x616cCBC180ed0b7C4121f7551DC6C262f749b2cD",
+    "RToken": "https://basescan.org/address/0x0Db78Bb35f58b6A591aCc6bbAEf6dD57C5Ea1908",
+    "Meta": "https://basescan.org/address/0xC4Dfb91cc97ef36D171F761ab15EdE9bbc2EE051",
+    "VeAeroSplitter": "https://basescan.org/address/0x341f394086D6877885fD2cC966904BDFc2620aBf",
+    "VeAeroBribes": "https://basescan.org/address/0xe3c012c9A8Cd0BafEcd60f72Bb9Cc49662d3FcDB",
+    "VeAeroLiquidation": "https://basescan.org/address/0xad608ecD3b506EB35f706bBb67D817aCe873B8eB",
+    "EmissionsVoteLib": "https://basescan.org/address/0x5a301a802B0C4BD5389E3Dc31eeB54cf37c65324",
+    "VoteLib": "https://basescan.org/address/0x2dE16D98569c6CB352F80fc6024F5C86F3Ef47c5"
+  }
+}

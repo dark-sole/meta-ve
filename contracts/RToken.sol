@@ -7,7 +7,7 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
- * @title RToken (R-AERO) V6
+ * @title RToken (R-AERO) V.BETA.1
  * @notice Liquidation receipt token - represents claim on underlying veAERO
  */
 contract RToken is ERC20, Ownable {

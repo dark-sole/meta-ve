@@ -4,8 +4,8 @@
 pragma solidity ^0.8.24;
 
 /**
- * @title Interfaces
- * @notice Centralized interface definitions for VeAero Ecosystem V6
+ * @title Interfaces V.BETA.1
+ * @notice Centralized interface definitions for VeAero Ecosystem
  */
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -14,14 +14,11 @@ pragma solidity ^0.8.24;
 
 /**
  * @title IVeAeroSplitter
- * @notice Interface for VeAeroSplitter V6 tokens
+ * @notice Interface for VeAeroSplitter BETA.1 tokens
  */
 interface IVeAeroSplitter {
     // Gauge voting
     function executeGaugeVote() external;
-    
-    // Emissions voting (called by CToken)
-    function recordEmissionsVote(address user, int8 choice, uint256 amount) external;
     
     // Liquidation (called by CToken and VToken)
     function recordCLock(address user, uint256 amount) external;
@@ -40,7 +37,6 @@ interface IVeAeroSplitter {
     function totalVLockedForVoting() external view returns (uint256);
 
     function isValidGauge(address pool) external view returns (bool);
-    function validateGauge(address pool) external view;
     
     // Transfer settlement (called by CToken._update)
     // Settles sender's rewards to treasury, weighted checkpoint for receiver
@@ -82,6 +78,7 @@ interface IVToken {
     function getPoolVotes(address pool) external view returns (uint256);
     function totalPassiveVotes() external view returns (uint256);
     function weightsEpoch() external view returns (uint256);
+    function currentLockedAmount(address user) external view returns (uint256);
     
     // Admin
     function configureVotingStorage(uint256 maxPools, uint256 totalSupply) external;
@@ -149,6 +146,10 @@ interface IMeta {
     function getCurrentS() external view returns (uint256);
     function totalLockedVotes() external view returns (uint256);
     function balanceOf(address account) external view returns (uint256);
+
+    // fee payout to C token
+    function claimFeesForVEPool() external returns (uint256);
+    function poolFeeAccrued(address pool) external view returns (uint256);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -175,6 +176,8 @@ interface IVotingEscrow {
     function depositFor(uint256 tokenId, uint256 amount) external;
     function split(uint256 _from, uint256 _amount) external returns (uint256 _tokenId1, uint256 _tokenId2);
     function canSplit(address _account) external view returns (bool);
+    function lockPermanent(uint256 _tokenId) external;
+    function distributor() external view returns (address);
 }
 
 /**
@@ -189,6 +192,15 @@ interface IVoter {
     function isGauge(address gauge) external view returns (bool);
     function isAlive(address gauge) external view returns (bool);
     function length() external view returns (uint256);
+    function reset(uint256 _tokenId) external;
+}
+
+/**
+ * @title IRewardsDistributor
+ * @notice Interface for Aerodrome RewardsDistributor (veAERO rebases)
+ */
+interface IRewardsDistributor {
+    function claim(uint256 _tokenId) external returns (uint256);
 }
 
 /**
@@ -196,7 +208,7 @@ interface IVoter {
  * @notice Interface for Aerodrome EpochGovernor
  */
 interface IEpochGovernor {
-    function castVote(uint256 proposalId, uint8 support) external;
+    function castVote(uint256 proposalId, uint256 tokenId, uint8 support) external returns (uint256);
 }
 
 /**
@@ -277,3 +289,48 @@ interface IVeAeroLiquidation {
     );
     function daysRemainingInCVote() external view returns (uint256);
 }
+
+/**
+ * @title IProposalVoteLib
+ * @notice Interface for proposal vote aggregation (deployed by MSIG when needed)
+ */
+interface IProposalVoteLib {
+    function getVoteInstruction(uint256 proposalId) external view returns (
+        address governor,
+        uint8 support,
+        uint256 weight
+    );
+}
+
+/**
+ * @title IProtocolGovernor  
+ * @notice Interface for Aerodrome/OpenZeppelin Governor
+ */
+interface IProtocolGovernor {
+    function castVote(uint256 proposalId, uint256 tokenId, uint8 support) external returns (uint256);
+    function proposalDeadline(uint256 proposalId) external view returns (uint256);
+}
+
+/**
+ * @title IEmissionsVoteLib
+ * @notice Interface for EmissionsVoteLib - emissions voting logic extracted from Splitter
+ */
+interface IEmissionsVoteLib {
+    /// @notice Record an emissions vote (called by CToken)
+    function recordVote(address user, int8 choice, uint256 amount) external;
+    
+    /// @notice Reset vote totals for new epoch (called by Splitter)
+    function resetEpoch(uint256 newEpoch) external;
+    
+    /// @notice Get the winning choice for execution
+    /// @return support 0=Against, 1=Abstain, 2=For
+    /// @return maxVotes The winning vote total
+    function getWinningChoice() external view returns (uint8 support, uint256 maxVotes);
+    
+    /// @notice Get all vote totals
+    function getTotals() external view returns (uint256 decrease, uint256 hold, uint256 increase);
+    
+    /// @notice Current epoch
+    function currentEpoch() external view returns (uint256);
+}
+

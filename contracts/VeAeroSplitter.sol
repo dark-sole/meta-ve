@@ -13,7 +13,7 @@ import "./Interfaces.sol";
 import "./IVoteLib.sol";
 
 /**
- * @title VeAeroSplitter V6
+ * @title VeAeroSplitter GAMMA
  * @notice Wraps veAERO NFTs into fungible V-AERO and C-AERO tokens
  * @dev 
  *      
@@ -66,7 +66,9 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     address public immutable TOKENISYS;
     address public immutable LIQUIDATION_MULTISIG;
     IVeAeroLiquidation public immutable LIQUIDATION;
-    address public immutable BRIBES; 
+    address public immutable BRIBES;
+    IRewardsDistributor public immutable REWARDS_DISTRIBUTOR;
+
     
     // ═══════════════════════════════════════════════════════════════
     // EXTERNAL CONTRACTS (Mutable)
@@ -75,6 +77,8 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     IVoter public aerodromeVoter;
     IEpochGovernor public epochGovernor;
     IVoteLib public voteLib;
+    IProposalVoteLib public proposalVoteLib;
+    IEmissionsVoteLib public emissionsVoteLib;
     
     
     // ═══════════════════════════════════════════════════════════════
@@ -84,6 +88,9 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     uint256 public masterNftId;
     uint256[] public pendingNftIds;
     uint256 public pendingNftBlock;
+    uint256[] public splitNftIds; 
+
+
     
     // ═══════════════════════════════════════════════════════════════
     // EPOCH STATE
@@ -94,14 +101,7 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     uint256 public votingStartTime;
     uint256 public votingEndTime;
     bool public voteExecutedThisEpoch;
-    
-    // ═══════════════════════════════════════════════════════════════
-    // EMISSIONS VOTING
-    // ═══════════════════════════════════════════════════════════════
-    
-    uint256 public emissionsDecreaseTotal;
-    uint256 public emissionsHoldTotal;
-    uint256 public emissionsIncreaseTotal;
+    uint256 public cachedTotalVLockedForVoting;
     
     // ═══════════════════════════════════════════════════════════════
     // LIQUID FEE CLAIMS
@@ -156,12 +156,15 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     event NFTConsolidated(uint256 indexed sourceId, uint256 indexed masterId);
     event PendingNftAdded(uint256 indexed tokenId, uint256 batchSize);
     event BatchConsolidated(uint256 count, uint256 indexed masterNftId);
+    event NFTsConsolidated(uint256 count);
     
     // Voting events
-    event EmissionsVoteRecorded(address indexed user, uint256 indexed epoch, int8 choice, uint256 amount);
     event GaugeVoteExecuted(address[] pools, uint256[] weights, uint256 activeTotal, uint256 passiveTotal);
     event EmissionsVoteExecuted(uint256 proposalId, uint8 support, uint256 totalVotes);
     event PoolRegistered(address indexed pool, uint256 indexed index);
+    event ProposalVoteLibUpdated(address indexed newLib);
+    event ProposalVoteExecuted(uint256 indexed proposalId, address indexed governor, uint8 support, uint256 weight);
+
     
     // Epoch events
     event EpochReset(uint256 indexed newEpoch, uint256 newEndTime);
@@ -178,6 +181,8 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     // Bribe events
     event BribeTokenWhitelisted(address indexed token, uint256 epoch);
     event BribeTokenPulled(address indexed token, address indexed to, uint256 amount);
+    event BribesSwept(address indexed token, address indexed to, uint256 amount);
+    event RebaseCollected(uint256 amount);
     
     // Transfer settlement events
     event FeesSweptToTokenisys(address indexed from, uint256 amount);
@@ -198,6 +203,10 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     event AerodromeVoterUpdated(address indexed newVoter);
     event EpochGovernorUpdated(address indexed newGovernor);
     event VoteLibUpdated(address indexed voteLib);
+    event EmissionsVoteLibUpdated(address indexed lib);
+    event MultiNFTVoteExecuted(uint256 numNfts, uint256 numPools);
+    event SplitNftsMerged(uint256 count, uint256 indexed masterNftId);
+   
     
     // ═══════════════════════════════════════════════════════════════
     // ERRORS
@@ -205,35 +214,13 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     
     error ZeroAddress();
     error ZeroAmount();
-    error NotNFTOwner();
-    error NFTAlreadyVoted();
-    error OnlyPermanentLocksAccepted();
-    error AmountTooSmall();
-    error NoMasterNft();
-    error NoPendingNfts();
-    error PendingNotReady();
-    error DepositsDisabled();
-    error VoteAlreadyExecuted();
-    error NoVotesToExecute();
-    error VotingNotStarted();
-    error VotingEnded();
-    error ExecutionWindowClosed();
-    error NotNewEpoch();
-    error CantSweepAero();
+    error InvalidTiming();
     error NothingToClaim();
-    error OnlyMultisig();
-    error OnlyOwnerOrMultisig();
-    error OnlyCToken();
-    error OnlyBribes();
+    error Unauthorized();
     error InvalidGauge(address pool);
-    error GaugeNotAlive();
-    error LiquidationInProgress();
-    error LiquidationNotApproved();
-    error WindowExpired();
-    error NotWhitelistedBribe();
-    error ProtocolTokenNotAllowed();
-    error VotingNotEnded();
-    
+    error WindowClosed();
+
+
     // ═══════════════════════════════════════════════════════════════
     // MODIFIERS
     // ═══════════════════════════════════════════════════════════════
@@ -249,7 +236,7 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
 
     function _checkNotInLiquidation() internal view {
         if (LIQUIDATION.isLiquidationApproved()) {
-            revert LiquidationInProgress();
+            revert InvalidTiming();
         }
     }   
     
@@ -282,7 +269,7 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         address _aerodromeVoter,
         address _epochGovernor
     ) Ownable(msg.sender) {
-        if (_votingEscrow == address(0) || _aeroToken == address(0) || _metaToken == address(0) || _vToken == address(0) || _cToken == address(0) || _rToken == address(0) || _tokenisys == address(0) || _liquidationMultisig == address(0) || _liquidation == address(0) || _bribes == address(0) || _aerodromeVoter == address(0) || _epochGovernor == address(0)) revert ZeroAddress();
+        if (_votingEscrow == address(0) || _aeroToken == address(0) || _metaToken == address(0) || _vToken == address(0) || _cToken == address(0) || _rToken == address(0) || _tokenisys == address(0) || _liquidationMultisig == address(0) || _liquidation == address(0) || _bribes == address(0) || _aerodromeVoter == address(0)) revert ZeroAddress();
         
         VOTING_ESCROW = IVotingEscrow(_votingEscrow);
         AERO_TOKEN = IERC20(_aeroToken);
@@ -294,6 +281,8 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         LIQUIDATION_MULTISIG = _liquidationMultisig;
         LIQUIDATION = IVeAeroLiquidation(_liquidation);
         BRIBES = _bribes;
+        REWARDS_DISTRIBUTOR = IRewardsDistributor(VOTING_ESCROW.distributor());
+
         aerodromeVoter = IVoter(_aerodromeVoter);
         epochGovernor = IEpochGovernor(_epochGovernor);
         
@@ -315,7 +304,7 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     // ═══════════════════════════════════════════════════════════════
     
     function resetEpoch() external notInLiquidation {
-        if (block.timestamp < epochEndTime) revert NotNewEpoch();
+        if (block.timestamp < epochEndTime) revert InvalidTiming();
         _resetEpoch();
     }
     
@@ -326,11 +315,14 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         votingEndTime = epochEndTime - 2 hours;
         
         voteExecutedThisEpoch = false;
-        emissionsDecreaseTotal = 0;
-        emissionsHoldTotal = 0;
-        emissionsIncreaseTotal = 0;
+         if (address(emissionsVoteLib) != address(0)) {
+            emissionsVoteLib.resetEpoch(currentEpoch);
+        }
         
-        _updateRebaseIndex();
+       // Collect rebase from Aerodrome (fail-safe)
+        _collectRebaseInternal();       
+
+
         
         emit EpochReset(currentEpoch, epochEndTime);
         emit VotingWindowSet(currentEpoch, votingStartTime, votingEndTime, epochEndTime);
@@ -354,15 +346,25 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     // ═══════════════════════════════════════════════════════════════
     
     function depositVeAero(uint256 tokenId) external nonReentrant notInLiquidation ensureCurrentEpoch {
-        if (!_isDepositWindowOpen()) revert DepositsDisabled();
-        if (VOTING_ESCROW.ownerOf(tokenId) != msg.sender) revert NotNFTOwner();
-        if (VOTING_ESCROW.voted(tokenId)) revert NFTAlreadyVoted();
+        if (!_isDepositWindowOpen()) revert InvalidTiming();
+        
+        // Auto-consolidate pending NFTs from previous blocks
+        // Auto-consolidate pending NFTs (only if master hasn't voted)
+        if (pendingNftIds.length > 0 && 
+            block.number > pendingNftBlock && 
+            masterNftId != 0 &&
+            !VOTING_ESCROW.voted(masterNftId)) {
+            _consolidateAll();
+        }
+        
+        if (VOTING_ESCROW.ownerOf(tokenId) != msg.sender) revert Unauthorized();
+        if (VOTING_ESCROW.voted(tokenId)) revert InvalidTiming();
         
         IVotingEscrow.LockedBalance memory locked = VOTING_ESCROW.locked(tokenId);
-        if (!locked.isPermanent) revert OnlyPermanentLocksAccepted();
+        if (!locked.isPermanent) revert Unauthorized();
         
         uint256 lockedAmount = uint256(uint128(locked.amount));
-        if (lockedAmount < MIN_DEPOSIT_AMOUNT) revert AmountTooSmall();
+        if (lockedAmount < MIN_DEPOSIT_AMOUNT) revert ZeroAmount();
         
         // Claim any pending rebase before deposit changes backing
         if (userRebaseCheckpoint[msg.sender] > 0 && 
@@ -418,9 +420,9 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     }
     
     function consolidatePending() external nonReentrant notInLiquidation {
-        if (masterNftId == 0) revert NoMasterNft();
-        if (pendingNftIds.length == 0) revert NoPendingNfts();
-        if (block.number <= pendingNftBlock) revert PendingNotReady();
+        if (masterNftId == 0) revert NothingToClaim();
+        if (pendingNftIds.length == 0) revert NothingToClaim();
+        if (block.number <= pendingNftBlock) revert InvalidTiming();
         
         _consolidateAll();
     }
@@ -447,6 +449,56 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         
         emit BatchConsolidated(count, masterNftId);
     }
+
+    function _mergeSplitNfts() internal {
+        uint256 count = splitNftIds.length;
+        
+        // First NFT becomes the new master
+        uint256 newMaster = splitNftIds[0];
+        
+        // Merge all others into the first
+        for (uint256 i = 1; i < count; i++) {
+            VOTING_ESCROW.unlockPermanent(splitNftIds[i]);
+            VOTING_ESCROW.merge(splitNftIds[i], newMaster);
+        }
+        
+        // Update master NFT ID
+        masterNftId = newMaster;
+        lastTrackedLocked = uint256(uint128(VOTING_ESCROW.locked(masterNftId).amount));
+        
+        // Clear split tracking
+        delete splitNftIds;
+        
+        emit SplitNftsMerged(count, masterNftId);
+    }
+    /**
+    * @notice Reset NFT votes and merge split NFTs
+    * @dev Keeper function - must wait for Aerodrome distribute window to close (Thu 01:00+)
+    */
+    function consolidateNFTs() external nonReentrant notInLiquidation {
+        // Cannot call during Aerodrome's distribute window (Thu 00:00-01:00 UTC)
+        uint256 epochStart = (block.timestamp / 1 weeks) * 1 weeks;
+        uint256 timeSinceEpochStart = block.timestamp - epochStart;
+        if (timeSinceEpochStart < 1 hours) revert WindowClosed();
+        
+        if (splitNftIds.length > 0) {
+            // Reset all split NFTs
+            for (uint256 i = 0; i < splitNftIds.length; i++) {
+                if (VOTING_ESCROW.voted(splitNftIds[i])) {
+                    aerodromeVoter.reset(splitNftIds[i]);
+                }
+            }
+            // Merge back into master
+            _mergeSplitNfts();
+        } else if (masterNftId != 0 && VOTING_ESCROW.voted(masterNftId)) {
+            // Normal case - just reset master
+            aerodromeVoter.reset(masterNftId);
+        }
+        
+        emit NFTsConsolidated(splitNftIds.length > 0 ? splitNftIds.length : 1);
+    }
+
+
     
     // ═══════════════════════════════════════════════════════════════
     // GAUGE VOTING
@@ -456,13 +508,15 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
      * @notice Execute gauge votes using aggregated votes from VToken
      * @dev Callable by anyone during execution window
      */
-     function executeGaugeVote() external nonReentrant notInLiquidation {
-    // Check if already executed
-    if (voteExecutedThisEpoch) revert VoteAlreadyExecuted();
+    function executeGaugeVote() external nonReentrant notInLiquidation {
+    if (voteExecutedThisEpoch) revert InvalidTiming();
+    if (block.timestamp <= votingEndTime) revert InvalidTiming();
+    if (block.timestamp > epochEndTime) revert InvalidTiming();
     
-    // Check execution window (timing provides security)
-    if (block.timestamp <= votingEndTime) revert VotingNotEnded();
-    if (block.timestamp > epochEndTime) revert ExecutionWindowClosed();
+    // Auto-consolidate pending NFTs before voting
+    if (pendingNftIds.length > 0 && block.number > pendingNftBlock) {
+        _consolidateAll();
+    }
     
     // Get aggregated votes from VToken
     (address[] memory pools, uint256[] memory weights) = V_TOKEN.getAggregatedVotes();
@@ -472,19 +526,25 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         // Check if there are passive votes but no active votes
         uint256 passiveVotes = V_TOKEN.totalPassiveVotes();
         if (passiveVotes > 0) {
-            revert NoVotesToExecute();  // Can't distribute passive without active
+            revert NothingToClaim();  // Can't distribute passive without active
         }
+        cachedTotalVLockedForVoting = 0;
         emit GaugeVoteExecuted(pools, weights, 0, 0);
         voteExecutedThisEpoch = true;
         return;
     }
     
     // Execute vote
+    bool canSplit = VOTING_ESCROW.canSplit(address(this));
+
     if (pools.length <= MAX_VOTE_POOLS) {
         // Direct execution (≤30 pools)
         aerodromeVoter.vote(masterNftId, pools, weights);
+    } else if (canSplit && address(voteLib) != address(0)) {
+        // Multi-NFT split voting (whitelisted and VoteLib set)
+        _executeMultiNFTVote(pools, weights);
     } else {
-        // Truncate to top 30 pools
+        // Truncate to top 30 pools (not whitelisted)
         address[] memory top30Pools = new address[](MAX_VOTE_POOLS);
         uint256[] memory top30Weights = new uint256[](MAX_VOTE_POOLS);
         
@@ -502,60 +562,104 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     // Capture totals BEFORE reset (convert from wei to whole tokens for event)
     uint256 activeVotesThisEpoch = totalVLockedForVoting();  // Capture before reset
     uint256 passiveVotesThisEpoch = V_TOKEN.totalPassiveVotes() / 1e18;
+
+    // Cache total for bribe snapshots BEFORE reset
+    cachedTotalVLockedForVoting = activeVotesThisEpoch;
     
     // Reset VToken for next epoch
     V_TOKEN.resetVotesForNewEpoch();
     
     // Emit with actual totals from this epoch (both in whole tokens)
     emit GaugeVoteExecuted(pools, weights, activeVotesThisEpoch, passiveVotesThisEpoch);
-}
+    }
+
+
+    function _executeMultiNFTVote(address[] memory pools, uint256[] memory weights) internal {
+        // Get distribution from VoteLib
+        IVoteLib.NFTVote[] memory nftVotes = voteLib.distributeVotes(pools, weights);
+        
+        uint256 numNFTs = nftVotes.length;
+        uint256 masterBalance = uint256(uint128(VOTING_ESCROW.locked(masterNftId).amount));
+        
+        // Clear any previous split tracking
+        delete splitNftIds;
+        
+        // Split master into required number of NFTs
+        uint256 currentNftId = masterNftId;
+        
+        for (uint256 i = 0; i < numNFTs - 1; i++) {
+            // Calculate split amount for next NFT
+            uint256 splitAmount = (masterBalance * nftVotes[i + 1].nftWeightBps) / 10000;
+            
+            // Split returns (remainingNftId, newNftId)
+            (uint256 remainingNftId, uint256 newNftId) = VOTING_ESCROW.split(currentNftId, splitAmount);
+            
+            // Track all NFTs
+            if (i == 0) {
+                splitNftIds.push(remainingNftId);  // First piece of original master
+            }
+            splitNftIds.push(newNftId);  // New split piece
+            
+            // Continue splitting from remaining
+            currentNftId = remainingNftId;
+        }
+        
+        // If only one split happened, add the remaining piece
+        if (splitNftIds.length == 0) {
+            splitNftIds.push(masterNftId);
+        }
+        
+        // Lock all split NFTs as permanent and vote
+        for (uint256 i = 0; i < splitNftIds.length; i++) {
+            // Lock permanent if not already
+            IVotingEscrow.LockedBalance memory locked = VOTING_ESCROW.locked(splitNftIds[i]);
+            if (!locked.isPermanent) {
+                VOTING_ESCROW.lockPermanent(splitNftIds[i]);
+            }
+            
+            // Vote this NFT
+            aerodromeVoter.vote(splitNftIds[i], nftVotes[i].pools, nftVotes[i].weights);
+        }
+        
+        // Master is now invalid (was split) - will be restored on resetEpoch
+        masterNftId = 0;
+        
+        emit MultiNFTVoteExecuted(numNFTs, pools.length);
+    }
 
     // ═══════════════════════════════════════════════════════════════
     // EMISSIONS VOTING
     // ═══════════════════════════════════════════════════════════════
     
-    function recordEmissionsVote(
-        address user,
-        int8 choice,
-        uint256 amount
-    ) external ensureCurrentEpoch {
-        if (msg.sender != address(C_TOKEN)) revert OnlyCToken();
-        
-        if (choice == -1) {
-            emissionsDecreaseTotal += amount;
-        } else if (choice == 0) {
-            emissionsHoldTotal += amount;
-        } else {
-            emissionsIncreaseTotal += amount;
-        }
-        
-        emit EmissionsVoteRecorded(user, currentEpoch, choice, amount);
-    }
-    
     function executeEmissionsVote(uint256 proposalId) external nonReentrant {
-        if (masterNftId == 0) revert NoMasterNft();
-        if (block.timestamp < votingEndTime) revert ExecutionWindowClosed();
-        if (block.timestamp > votingEndTime + 1 hours) revert ExecutionWindowClosed();
+        if (address(epochGovernor) == address(0)) revert ZeroAddress();
+        if (address(emissionsVoteLib) == address(0)) revert ZeroAddress();
+        if (masterNftId == 0) revert NothingToClaim();
+        if (block.timestamp < votingEndTime) revert InvalidTiming();
+        if (block.timestamp > votingEndTime + 1 hours) revert InvalidTiming();
         
-        uint256 maxVotes = emissionsHoldTotal;
-        uint8 support = 1; // Hold
+        (uint8 support, uint256 maxVotes) = emissionsVoteLib.getWinningChoice();
         
-        if (emissionsDecreaseTotal > maxVotes) {
-            maxVotes = emissionsDecreaseTotal;
-            support = 0; // Against
-        }
-        if (emissionsIncreaseTotal > maxVotes) {
-            maxVotes = emissionsIncreaseTotal;
-            support = 2; // For
-        }
+        if (maxVotes == 0) revert NothingToClaim();
         
-        if (maxVotes == 0) revert NoVotesToExecute();
-        
-        epochGovernor.castVote(proposalId, support);
+        epochGovernor.castVote(proposalId, masterNftId, support);
         
         emit EmissionsVoteExecuted(proposalId, support, maxVotes);
     }
     
+    function executeProposalVote(uint256 proposalId) external nonReentrant {
+        if (address(proposalVoteLib) == address(0)) revert ZeroAddress();
+        if (masterNftId == 0) revert NothingToClaim();
+        
+        (address governor, uint8 support, uint256 weight) = proposalVoteLib.getVoteInstruction(proposalId);
+        
+        if (weight == 0) revert NothingToClaim();
+        
+        IProtocolGovernor(governor).castVote(proposalId, masterNftId, support);
+        
+        emit ProposalVoteExecuted(proposalId, governor, support, weight);
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // FEE COLLECTION & CLAIMS
     // ═══════════════════════════════════════════════════════════════
@@ -564,7 +668,7 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         address[] calldata feeDistributors,
         address[][] calldata tokens
     ) external nonReentrant notInLiquidation {
-        if (masterNftId == 0) revert NoMasterNft();
+        if (masterNftId == 0) revert NothingToClaim();
         
         uint256 balanceBefore = AERO_TOKEN.balanceOf(address(this));
         
@@ -609,15 +713,6 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         emit FeesClaimed(msg.sender, owed);
     }
     
-    function pendingFees(address user) external view returns (uint256) {
-        uint256 checkpoint = userFeeCheckpoint[user];
-        if (checkpoint == 0) {
-            checkpoint = PRECISION;
-        }
-        uint256 balance = C_TOKEN.balanceOf(user);
-        return (balance * (globalFeeIndex - checkpoint)) / PRECISION;
-    }
-    
     // ═══════════════════════════════════════════════════════════════
     // META COLLECTION & CLAIMS
     // ═══════════════════════════════════════════════════════════════
@@ -658,15 +753,6 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         emit MetaClaimed(msg.sender, owed);
     }
     
-    function pendingMeta(address user) external view returns (uint256) {
-        uint256 checkpoint = userMetaCheckpoint[user];
-        if (checkpoint == 0) {
-            checkpoint = PRECISION;
-        }
-        uint256 balance = C_TOKEN.balanceOf(user);
-        return (balance * (globalMetaIndex - checkpoint)) / PRECISION;
-    }
-    
     // ═══════════════════════════════════════════════════════════════
     // REBASE CLAIMS
     // ═══════════════════════════════════════════════════════════════
@@ -688,10 +774,30 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         
         lastTrackedLocked = currentLocked; 
     }
+
+    function _collectRebaseInternal() internal {
+        if (masterNftId == 0) return;
+        
+        // Try to claim from Aerodrome - don't revert if it fails
+        try REWARDS_DISTRIBUTOR.claim(masterNftId) returns (uint256 claimed) {
+            if (claimed > 0) {
+                emit RebaseCollected(claimed);
+            }
+        } catch {
+            // Aerodrome claim failed - continue anyway
+        }
+        
+        _updateRebaseIndex();
+    }
+
+
     
+
+
     function claimRebase() external nonReentrant notInLiquidation {
         _claimRebaseInternal(msg.sender);
     }
+
     
     function _claimRebaseInternal(address user) internal returns (uint256 netAmount) {
         _updateRebaseIndex();
@@ -736,55 +842,19 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
 
         emit RebaseClaimed(user, userVAmount, userCAmount);
     }
-    
-    function pendingRebase(address user) external view returns (uint256) {
-        uint256 checkpoint = userRebaseCheckpoint[user];
-        if (checkpoint == 0) return 0;
-        
-        uint256 cBalance = C_TOKEN.balanceOf(user);
-        uint256 grossOwed = (cBalance * (globalRebaseIndex - checkpoint)) / PRECISION;
-        
-        // Return user's V amount (90%)
-        uint256 tokenisysAmount = (grossOwed * TOKENISYS_FEE_BPS) / 10000;
-        uint256 metaAmount = (grossOwed * META_FEE_BPS) / 10000;
-        return grossOwed - tokenisysAmount - metaAmount;
-            }
-    
-    function getAllPendingClaims(address user) external view returns (
-        uint256 rebaseAmount,
-        uint256 feeAmount,
-        uint256 metaAmount
-    ) {
-        // Rebase
-        uint256 rebaseCheckpoint = userRebaseCheckpoint[user];
-        if (rebaseCheckpoint > 0) {
-            uint256 cBalance = C_TOKEN.balanceOf(user);
-            uint256 grossRebase = (cBalance * (globalRebaseIndex - rebaseCheckpoint)) / PRECISION;
-            uint256 tokenisysAmount = (grossRebase * TOKENISYS_FEE_BPS) / 10000;  // 1%
-            metaAmount = (grossRebase * META_FEE_BPS) / 10000;            // 9%
-            rebaseAmount = grossRebase - tokenisysAmount - metaAmount;            // 90%
-       }
-        
-        // Fees
-        uint256 feeCheckpoint = userFeeCheckpoint[user];
-        if (feeCheckpoint == 0) feeCheckpoint = PRECISION;
-        uint256 cBalanceFee = C_TOKEN.balanceOf(user);
-        feeAmount = (cBalanceFee * (globalFeeIndex - feeCheckpoint)) / PRECISION;
-        
-        // Meta
-        uint256 metaCheckpoint = userMetaCheckpoint[user];
-        if (metaCheckpoint == 0) metaCheckpoint = PRECISION;
-        uint256 cBalanceMeta = C_TOKEN.balanceOf(user);
-        metaAmount = (cBalanceMeta * (globalMetaIndex - metaCheckpoint)) / PRECISION;
+
+    /**
+    * @notice Collect rebase from Aerodrome RewardsDistributor
+    * @dev Anyone can call - updates rebase index after collection
+    * @return claimed Amount of AERO added to master NFT
+    */
+    function collectRebase() external notInLiquidation returns (uint256 claimed) {
+        if (masterNftId == 0) revert NothingToClaim();
+        claimed = REWARDS_DISTRIBUTOR.claim(masterNftId);
+        _updateRebaseIndex();
+        emit RebaseCollected(claimed);
     }
 
-
-   
-
-   
-
-
-    
     // ═══════════════════════════════════════════════════════════════
     // TRANSFER SETTLEMENT (called by CToken)
     // ═══════════════════════════════════════════════════════════════
@@ -794,81 +864,79 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         address to,
         uint256 amount
     ) external {
-        if (msg.sender != address(C_TOKEN)) revert OnlyCToken();
-        if (from == address(0) || to == address(0)) return;  // Guard for mint/burn
+        if (msg.sender != address(C_TOKEN)) revert Unauthorized();
+        if (from == address(0) || to == address(0)) return;
+        if (from == to) return;  // Self-transfer is no-op
         
-        // Calculate unclaimed amounts for sender
-        uint256 fromBalance = C_TOKEN.balanceOf(from);
-        
+        // ═══════════════════════════════════════════════════════════════════
+        // SENDER: Sweep unclaimed rewards on transferred tokens to Tokenisys
+        // ═══════════════════════════════════════════════════════════════════
         uint256 fromFeeCheckpoint = userFeeCheckpoint[from];
         if (fromFeeCheckpoint == 0) fromFeeCheckpoint = PRECISION;
-        uint256 unclaimedFees = (fromBalance * (globalFeeIndex - fromFeeCheckpoint)) / PRECISION;
+        uint256 unclaimedFees = (amount * (globalFeeIndex - fromFeeCheckpoint)) / PRECISION;
         
         uint256 fromMetaCheckpoint = userMetaCheckpoint[from];
         if (fromMetaCheckpoint == 0) fromMetaCheckpoint = PRECISION;
-        uint256 unclaimedMeta = (fromBalance * (globalMetaIndex - fromMetaCheckpoint)) / PRECISION;
+        uint256 unclaimedMeta = (amount * (globalMetaIndex - fromMetaCheckpoint)) / PRECISION;
         
         uint256 fromRebaseCheckpoint = userRebaseCheckpoint[from];
         uint256 unclaimedRebase = 0;
         if (fromRebaseCheckpoint > 0) {
-            unclaimedRebase = (fromBalance * (globalRebaseIndex - fromRebaseCheckpoint)) / PRECISION;
+            unclaimedRebase = (amount * (globalRebaseIndex - fromRebaseCheckpoint)) / PRECISION;
         }
         
-        // Calculate weighted average checkpoints for receiver
-        uint256 toBalance = C_TOKEN.balanceOf(to);
+        // Sender checkpoint unchanged - they can still claim on remaining balance
         
-        uint256 toFeeCheckpoint = userFeeCheckpoint[to];
-        if (toFeeCheckpoint == 0) toFeeCheckpoint = PRECISION;
+        // ═══════════════════════════════════════════════════════════════════
+        // RECIPIENT: Blend checkpoints (existing tokens keep history, new get global)
+        // ═══════════════════════════════════════════════════════════════════
+        uint256 toBalanceAfter = C_TOKEN.balanceOf(to);
+        uint256 toBalanceBefore = toBalanceAfter - amount;
         
-        uint256 toMetaCheckpoint = userMetaCheckpoint[to];
-        if (toMetaCheckpoint == 0) toMetaCheckpoint = PRECISION;
-        
-        uint256 toRebaseCheckpoint = userRebaseCheckpoint[to];
-        if (toRebaseCheckpoint == 0) toRebaseCheckpoint = globalRebaseIndex;
-        
-        uint256 newTotal = toBalance + amount;
-        uint256 newToFeeCheckpoint = toFeeCheckpoint;
-        uint256 newToMetaCheckpoint = toMetaCheckpoint;
-        uint256 newToRebaseCheckpoint = toRebaseCheckpoint;
-        
-        if (newTotal > 0) {
-            newToFeeCheckpoint = ((toBalance * toFeeCheckpoint) + (amount * globalFeeIndex)) / newTotal;
-            newToMetaCheckpoint = ((toBalance * toMetaCheckpoint) + (amount * globalMetaIndex)) / newTotal;
-            newToRebaseCheckpoint = ((toBalance * toRebaseCheckpoint) + (amount * globalRebaseIndex)) / newTotal;
+        if (toBalanceBefore == 0) {
+            userFeeCheckpoint[to] = globalFeeIndex;
+            userMetaCheckpoint[to] = globalMetaIndex;
+            userRebaseCheckpoint[to] = globalRebaseIndex;
+        } else {
+            uint256 toFeeCheckpoint = userFeeCheckpoint[to];
+            if (toFeeCheckpoint == 0) toFeeCheckpoint = PRECISION;
+            
+            uint256 toMetaCheckpoint = userMetaCheckpoint[to];
+            if (toMetaCheckpoint == 0) toMetaCheckpoint = PRECISION;
+            
+            uint256 toRebaseCheckpoint = userRebaseCheckpoint[to];
+            if (toRebaseCheckpoint == 0) toRebaseCheckpoint = globalRebaseIndex;
+            
+            userFeeCheckpoint[to] = ((toBalanceBefore * toFeeCheckpoint) + (amount * globalFeeIndex) + toBalanceAfter - 1) / toBalanceAfter;
+            userMetaCheckpoint[to] = ((toBalanceBefore * toMetaCheckpoint) + (amount * globalMetaIndex) + toBalanceAfter - 1) / toBalanceAfter;
+            userRebaseCheckpoint[to] = ((toBalanceBefore * toRebaseCheckpoint) + (amount * globalRebaseIndex) + toBalanceAfter - 1) / toBalanceAfter;
         }
         
-        // Update checkpoints
-        userFeeCheckpoint[from] = globalFeeIndex;
-        userMetaCheckpoint[from] = globalMetaIndex;
-        userRebaseCheckpoint[from] = globalRebaseIndex;
-        
-        userFeeCheckpoint[to] = newToFeeCheckpoint;
-        userMetaCheckpoint[to] = newToMetaCheckpoint;
-        userRebaseCheckpoint[to] = newToRebaseCheckpoint;
-        
+        // ═══════════════════════════════════════════════════════════════════
+        // SWEEP to Tokenisys
+        // ═══════════════════════════════════════════════════════════════════
         if (unclaimedMeta > 0) {
             totalMetaIndexed -= unclaimedMeta;
+            META_TOKEN.safeTransfer(TOKENISYS, unclaimedMeta);
+            emit MetaSweptToTokenisys(from, unclaimedMeta);
         }
         
-        // Transfer unclaimed to Tokenisys
         if (unclaimedFees > 0) {
             AERO_TOKEN.safeTransfer(TOKENISYS, unclaimedFees);
             emit FeesSweptToTokenisys(from, unclaimedFees);
         }
         
-        if (unclaimedMeta > 0) {
-            META_TOKEN.safeTransfer(TOKENISYS, unclaimedMeta);
-            emit MetaSweptToTokenisys(from, unclaimedMeta);
-        }
-        
         if (unclaimedRebase > 0) {
-            V_TOKEN.mint(TOKENISYS, unclaimedRebase);
+            uint256 metaAmount = (unclaimedRebase * META_FEE_BPS) / 10000;  // 9%
+            //V-AERO: 91% to Tokenisys, 9% to META
+            V_TOKEN.mint(TOKENISYS, unclaimedRebase-metaAmount);
+            V_TOKEN.mint(address(META_TOKEN),metaAmount);
             C_TOKEN.mint(TOKENISYS, unclaimedRebase);
             adjustedRebaseBacking += unclaimedRebase;
             emit RebaseSweptToTokenisys(from, unclaimedRebase);
         }
     }
-    
+
     // ═══════════════════════════════════════════════════════════════
     // BRIBE COLLECTION & PULL 
     // ═══════════════════════════════════════════════════════════════
@@ -881,7 +949,7 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         address[] calldata bribes,
         address[][] calldata tokens
     ) external nonReentrant notInLiquidation {
-        if (masterNftId == 0) revert NoMasterNft();
+        if (masterNftId == 0) revert NothingToClaim();
         
         aerodromeVoter.claimBribes(bribes, tokens, masterNftId);
         
@@ -914,20 +982,45 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
      */
     function pullBribeToken(address token, address to, uint256 amount) external {
         // Only VeAeroBribes can call
-        if (msg.sender != BRIBES) revert OnlyBribes();
+        if (msg.sender != BRIBES) revert Unauthorized();
         
         // Cannot pull protocol tokens
-        if (token == address(AERO_TOKEN)) revert ProtocolTokenNotAllowed();
+        if (token == address(AERO_TOKEN)) revert Unauthorized();
         
         // Must be whitelisted for current epoch
-        if (!isWhitelistedBribe[token]) revert NotWhitelistedBribe();
-        if (bribeWhitelistEpoch[token] != currentEpoch) revert NotWhitelistedBribe();
+        if (!isWhitelistedBribe[token]) revert Unauthorized();
+        if (bribeWhitelistEpoch[token] != currentEpoch) revert Unauthorized();
         
         // Transfer to recipient
         IERC20(token).safeTransfer(to, amount);
         
         emit BribeTokenPulled(token, to, amount);
     }
+
+    /**
+    * @notice Sweep any tokens to designated address (Tokenisys only)
+    * @dev Only callable in last hour of epoch (sweep window)
+    * @param tokens Array of token addresses to sweep
+    * @param to Recipient address (address(0) defaults to TOKENISYS)
+    */
+    function sweepBribes(address[] calldata tokens, address to) external {
+        if (msg.sender != TOKENISYS) revert Unauthorized();
+        
+        uint256 epochEnd = epochEndTime;
+        if (block.timestamp < epochEnd - 1 hours) revert WindowClosed();
+        if (block.timestamp >= epochEnd) revert WindowClosed();
+        
+        address recipient = to == address(0) ? TOKENISYS : to;
+        
+        for (uint256 i = 0; i < tokens.length; i++) {
+            uint256 balance = IERC20(tokens[i]).balanceOf(address(this));
+            if (balance > 0) {
+                IERC20(tokens[i]).safeTransfer(recipient, balance);
+                emit BribesSwept(tokens[i], recipient, balance);
+            }
+        }
+    }
+
     
     // ═══════════════════════════════════════════════════════════════
     // LIQUIDATION FINALIZATION (R-Token, NFT Withdrawal)
@@ -938,10 +1031,10 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
      * @dev Users get R-Tokens proportional to their C-AERO locked
      */
     function claimRTokens() external nonReentrant {
-        if (!LIQUIDATION.isLiquidationApproved()) revert LiquidationNotApproved();
+        if (!LIQUIDATION.isLiquidationApproved()) revert InvalidTiming();
         
         uint256 approvedTime = LIQUIDATION.getLiquidationApprovedTime();
-        if (block.timestamp > approvedTime + R_CLAIM_WINDOW) revert WindowExpired();
+        if (block.timestamp > approvedTime + R_CLAIM_WINDOW) revert WindowClosed();
         
         uint256 locked = LIQUIDATION.getUserCLocked(msg.sender);
         if (locked == 0) revert NothingToClaim();
@@ -964,11 +1057,11 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
      * @dev Only callable after claim window expires
      */
     function sweepUnclaimedReceipts() external {
-        if (msg.sender != owner() && msg.sender != LIQUIDATION_MULTISIG) revert OnlyOwnerOrMultisig();
-        if (!LIQUIDATION.isLiquidationApproved()) revert LiquidationNotApproved();
+        if (msg.sender != owner() && msg.sender != LIQUIDATION_MULTISIG) revert Unauthorized();
+        if (!LIQUIDATION.isLiquidationApproved()) revert InvalidTiming();
         
         uint256 approvedTime = LIQUIDATION.getLiquidationApprovedTime();
-        if (block.timestamp <= approvedTime + R_CLAIM_WINDOW) revert WindowExpired();
+        if (block.timestamp <= approvedTime + R_CLAIM_WINDOW) revert WindowClosed();
         
         uint256 totalLocked = LIQUIDATION.getTotalCLocked();
         uint256 unclaimed = totalLocked - totalRClaimed;
@@ -989,13 +1082,13 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
 
 
     function withdrawAllNFTs() external {
-        if (msg.sender != LIQUIDATION_MULTISIG) revert OnlyMultisig();
+        if (msg.sender != LIQUIDATION_MULTISIG) revert Unauthorized();
         
         (IVeAeroLiquidation.LiquidationPhase phase,,,,, ) = 
             LIQUIDATION.getLiquidationStatus(currentEpoch, epochEndTime);
         
         if (phase != IVeAeroLiquidation.LiquidationPhase.Closed) {
-            revert LiquidationNotApproved();
+            revert InvalidTiming();
         }
         
         uint256 nftId = masterNftId;
@@ -1020,6 +1113,11 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         epochGovernor = IEpochGovernor(_governor);
         emit EpochGovernorUpdated(_governor);
     }
+    function setProposalVoteLib(address _lib) external onlyOwner {
+        proposalVoteLib = IProposalVoteLib(_lib);
+        emit ProposalVoteLibUpdated(_lib);
+    }
+
     /**
      * @notice Set VoteLib address for multi-NFT vote distribution
      * @dev Owner only (will be MSIG after ownership transfer)
@@ -1029,16 +1127,18 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         voteLib = IVoteLib(_voteLib);
         emit VoteLibUpdated(_voteLib);
     }
+    /**
+     * @notice Set EmissionsVoteLib address
+     * @param _lib EmissionsVoteLib contract address
+     */
+    function setEmissionsVoteLib(address _lib) external onlyOwner {
+        emissionsVoteLib = IEmissionsVoteLib(_lib);
+        emit EmissionsVoteLibUpdated(_lib);
+    }
 
-
-    
     // ═══════════════════════════════════════════════════════════════
     // VIEW FUNCTIONS
     // ═══════════════════════════════════════════════════════════════
-    
-    function isDepositWindowOpen() external view returns (bool) {
-        return _isDepositWindowOpen();
-    }
     
     
     /**
@@ -1092,9 +1192,6 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         if (gauge == address(0)) return false;
         return aerodromeVoter.isAlive(gauge);
     }
-    function validateGauge(address pool) external view {
-        if (!isValidGauge(pool)) revert InvalidGauge(pool);
-    }
 
     /**
      * @notice Get current active votes (computed dynamically)
@@ -1103,13 +1200,6 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     function totalVLockedForVoting() public view returns (uint256) {
         return V_TOKEN.totalGaugeVotedThisEpoch() / 1e18;
     }
-    
-    /**
-     * @notice Get current passive votes in whole tokens
-     * @return Passive votes in whole tokens
-     */
-    function totalPassiveVotes() public view returns (uint256) {
-        return V_TOKEN.totalPassiveVotes() / 1e18;
-    }
+
 }
 

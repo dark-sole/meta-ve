@@ -12,7 +12,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./Interfaces.sol";
 
 /**
- * @title Meta V6
+ * @title Meta V.BETA.1
  * @notice META token with utilization-based emissions, multi-VE support
  * @dev Gas optimized, CEI compliant
  * 
@@ -186,6 +186,8 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
     event L1ProofAuthorityRenounced();
     event FeeContractSet(address indexed feeContract);
     event MultiVEEnabled();
+    event SplitterUpdated(address indexed newSplitter);
+    event MSIGUpdated(address indexed newMSIG);
     
     // ════════════════════════════════════════════════════════════════════════
     // ERRORS
@@ -301,6 +303,7 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         if (_splitter == address(0)) revert ZeroAddress();
         if (splitter != address(0)) revert AlreadySet();
         splitter = _splitter;
+        emit SplitterUpdated(_splitter);
     }
     
     function setVToken(address _vToken) external onlyMSIG {
@@ -324,6 +327,7 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
     function setMSIG(address newMSIG) external onlyMSIG {
         if (newMSIG == address(0)) revert ZeroAddress();
         msigTreasury = newMSIG;
+        emit MSIGUpdated(newMSIG);
     }
     
     // ════════════════════════════════════════════════════════════════════════
@@ -527,12 +531,11 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         address _lpPool = lpPool;
         address _vToken = vToken;
         
-        if (_lpPool == address(0)) revert LPPoolNotSet();
         if (_vToken == address(0)) revert VTokenNotSet();
         
         uint256 epochEnd = ((block.timestamp / EPOCH_DURATION) + 1) * EPOCH_DURATION;
-        uint256 votingEnd = epochEnd - 2 hours; // Wed 22-00
-        if (block.timestamp < epochEnd - 1 hours || block.timestamp >= epochEnd) {
+
+        if (block.timestamp < epochEnd - 3 hours || block.timestamp >= epochEnd - 2 hours) {
             revert VoteWindowNotOpen();
         }
         
@@ -541,14 +544,19 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         
         uint256 wholeBal = (vBal / 1e18) * 1e18;
         if (wholeBal == 0) return;
-        
-        uint256 half = wholeBal >> 1;
-        uint256 other = wholeBal - half;
-        
-        IVToken(_vToken).votePassive(half);
-        IVToken(_vToken).vote(_lpPool, other);
-        
-        emit VotePushed(half, other);
+
+        if (_lpPool == address(0)) {
+            // No LP pool - vote 100% passive
+            IVToken(_vToken).votePassive(wholeBal);
+            emit VotePushed(wholeBal, 0);
+            } else {
+                // LP pool set - vote 50/50
+                uint256 half = wholeBal >> 1;
+                uint256 other = wholeBal - half;
+                IVToken(_vToken).votePassive(half);
+                IVToken(_vToken).vote(_lpPool, other);
+                emit VotePushed(half, other);
+        }
     }
     
     // ════════════════════════════════════════════════════════════════════════
@@ -1253,3 +1261,4 @@ contract Meta is ERC20, Ownable, ReentrancyGuard {
         return uint256(accrued);
     }
 }
+

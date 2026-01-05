@@ -7,7 +7,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
- * @title VeAeroLiquidation
+ * @title VeAeroLiquidation V.BETA.1
  * @notice Tracks liquidation votes and phase transitions for VeAeroSplitter
  * @dev Separated from VeAeroSplitter V5 to meet EIP-170 size limit
  *      
@@ -99,6 +99,9 @@ contract VeAeroLiquidation {
         address _vToken,
         address _splitter
     ) {
+        require(_cToken != address(0), "Zero cToken");
+        require(_vToken != address(0), "Zero vToken");
+        require(_splitter != address(0), "Zero splitter");
         C_TOKEN = IERC20(_cToken);
         V_TOKEN = IERC20(_vToken);
         SPLITTER = _splitter;
@@ -235,15 +238,26 @@ contract VeAeroLiquidation {
         
         if (cAmount == 0 && vAmount == 0) revert NothingToWithdraw();
         
+        // ═══════════════════════════════════════════════════════════════════
+        // EFFECTS - All state updates before any external calls
+        // ═══════════════════════════════════════════════════════════════════
         cLockedForLiquidation[msg.sender] = 0;
         vLockedForLiquidation[msg.sender] = 0;
         
         if (cAmount > 0) {
             totalCLocked -= cAmount;
-            C_TOKEN.safeTransfer(msg.sender, cAmount);
         }
         if (vAmount > 0) {
             totalVLocked -= vAmount;
+        }
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // INTERACTIONS - All external calls after state is finalized
+        // ═══════════════════════════════════════════════════════════════════
+        if (cAmount > 0) {
+            C_TOKEN.safeTransfer(msg.sender, cAmount);
+        }
+        if (vAmount > 0) {
             V_TOKEN.safeTransfer(msg.sender, vAmount);
         }
         
