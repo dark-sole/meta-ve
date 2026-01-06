@@ -1,4 +1,4 @@
-<![CDATA[# META-VE Test Suite Results
+# META-VE Test Suite Results
 
 **Date:** January 2026  
 **Version:** 1.0  
@@ -160,4 +160,3 @@ certoraRun certora/GammaSpec.conf
 ---
 
 © 2026 Tokenisys. All rights reserved.
-]]>

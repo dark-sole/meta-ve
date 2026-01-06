@@ -1,4 +1,4 @@
-<![CDATA[# META-VE Protocol Reward Claim Paths
+# META-VE Protocol Reward Claim Paths
 
 **Version:** 1.0  
 **Date:** January 2026  
@@ -198,4 +198,3 @@ On C-AERO transfers, the `onCTokenTransfer()` hook handles reward settlement:
 ---
 
 © 2026 Tokenisys. All rights reserved.
-]]>

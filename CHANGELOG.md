@@ -1,4 +1,4 @@
-<![CDATA[# Changelog
+# Changelog
 
 All notable changes to the META-VE Protocol.
 
@@ -88,4 +88,3 @@ All notable changes to the META-VE Protocol.
 ---
 
 © 2026 Tokenisys. All rights reserved.
-]]>

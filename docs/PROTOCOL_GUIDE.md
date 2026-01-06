@@ -1,4 +1,4 @@
-<![CDATA[# META-VE Protocol Guide
+# META-VE Protocol Guide
 
 **Version:** 1.0  
 **Network:** Base Mainnet (Chain ID: 8453)  
@@ -294,5 +294,4 @@ splitter.votingEndTime();
 ---
 
 © 2026 Tokenisys. All rights reserved.  
-Contact: ds@tokenisys.com
-]]>
+Contact@tokenisys.xyz

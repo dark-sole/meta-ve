@@ -1,4 +1,4 @@
-<![CDATA[# META-VE Protocol: MSIG Admin Rights & Post-Deployment Guide
+# META-VE Protocol: MSIG Admin Rights & Post-Deployment Guide
 
 **Version:** 1.0  
 **Date:** January 2026  
@@ -148,4 +148,3 @@ This design ensures that even a compromised MSIG cannot steal user assets - only
 ---
 
 © 2026 Tokenisys. All rights reserved.
-]]>
