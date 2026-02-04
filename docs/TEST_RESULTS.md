@@ -1,7 +1,7 @@
 # META-VE Test Suite Results
 
 **Date:** January 2026  
-**Version:** 1.0  
+**Version:** 2.0 (DELTA)  
 **Total Unit Tests:** 692 (675 + 17 stress tests)  
 **Total Fork Tests:** 141  
 **Total Tests:** 833  
@@ -33,7 +33,7 @@ The META-VE test suite validates the complete protocol across 38 unit test files
 - ✅ Multi-VE pool voting (Phase 2 prep)
 - ✅ Windfall protection on CToken minting
 - ✅ EmissionsVoteLib epoch reset integration
-- ✅ **Transfer settlement (sweep on amount, round-UP)**
+- ✅ **Transfer settlement (re-index on amount, round-UP)**
 - ✅ **Multi-epoch stress testing (17 scenarios, 100+ users)**
 - ✅ **Live mainnet fork verification (141 tests)**
 - ✅ **Formal verification (62 properties across 4 tools)**
@@ -79,7 +79,7 @@ The META-VE test suite validates the complete protocol across 38 unit test files
 | `check_claimFeesDecreasesIndex` | CToken | ✅ Proven |
 | `check_noDoubleClaimFees` | CToken | ✅ Proven |
 | `check_rebaseIndexMonotonic` | VeAeroSplitter | ✅ Proven |
-| `check_transferSweepsOnAmount` | VeAeroSplitter | ✅ Proven |
+| `check_transferReindexesOnAmount` | VeAeroSplitter | ✅ Proven |
 | `check_recipientCheckpointRoundsUp` | VeAeroSplitter | ✅ Proven |
 | ... | ... | ✅ Proven |
 
@@ -98,7 +98,7 @@ The META-VE test suite validates the complete protocol across 38 unit test files
 
 | Specification | Rules | Status |
 |---------------|-------|--------|
-| GammaSpec.conf (CToken) | 6 | ✅ Verified |
+| DeltaSpec.conf (CToken) | 6 | ✅ Verified |
 | RebaseSpec.conf (Splitter) | 5 | ✅ Verified |
 | MetaStakingSpec.conf (Meta) | 6 | ✅ Verified |
 | BribeSpec.conf (Bribes) | 7 | ✅ Verified |
@@ -119,6 +119,7 @@ The META-VE test suite validates the complete protocol across 38 unit test files
 | VoteLib.sol | 4 | 4 | - | - | - | 100% |
 | EmissionsVoteLib.sol | 2 | 2 | - | - | - | 100% |
 | L1ProofVerifier.sol | 6 | 6 | - | - | - | 100% |
+| FeeSwapper.sol | 6 | 6 | - | - | - | 100% |
 
 ---
 
@@ -154,7 +155,7 @@ halmos --contract HalmosComprehensive --function check_ --solver-timeout-asserti
 echidna test/echidna/EchidnaComprehensive.sol --contract EchidnaComprehensive --config echidna.yaml
 
 # Run Certora verification
-certoraRun certora/GammaSpec.conf
+certoraRun certora/DeltaSpec.conf
 ```
 
 ---

@@ -7,7 +7,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
- * @title VeAeroLiquidation V.BETA.1
+ * @title VeAeroLiquidation V.DELTA
  * @notice Tracks liquidation votes and phase transitions for VeAeroSplitter
  * @dev Separated from VeAeroSplitter V5 to meet EIP-170 size limit
  *      

@@ -4,7 +4,7 @@
 pragma solidity ^0.8.24;
 
 /**
- * @title DynamicGaugeVoteStorage  V.ALPHA.1
+ * @title DynamicGaugeVoteStorage  V.DELTA
  * @notice Bitpacked storage for gauge voting weights with dynamic configuration
  * @dev Adapts to:
  *      - Number of pools from Aerodrome voter.length()

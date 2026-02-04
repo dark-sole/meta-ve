@@ -4,7 +4,7 @@
 pragma solidity ^0.8.24;
 
 /**
- * @title Interfaces V.BETA.1
+ * @title Interfaces V.DELTA
  * @notice Centralized interface definitions for VeAero Ecosystem
  */
 

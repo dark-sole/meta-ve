@@ -7,7 +7,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./Interfaces.sol";
 
 /**
- * @title VeAeroBribes V.BETA.1
+ * @title VeAeroBribes V.DELTA
  * @notice Handles bribe snapshot and claim logic for VeAeroSplitter
  * @dev Separated from VeAeroSplitter to meet EIP-170 size limit
  *      

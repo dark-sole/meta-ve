@@ -11,7 +11,7 @@ import "./DynamicGaugeVoteStorage.sol";
 import "./DynamicPoolRegistry.sol";
 
 /**
- * @title VToken (V-AERO) V.BETA.1
+ * @title VToken (V-AERO) V.DELTA
  * @notice Voting rights token for veAERO wrapper - 18 decimals
  */
 contract VToken is ERC20, Ownable, ReentrancyGuard {

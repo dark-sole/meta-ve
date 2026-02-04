@@ -1,6 +1,6 @@
 # META-VE Protocol: MSIG Admin Rights & Post-Deployment Guide
 
-**Version:** 1.0  
+**Version:** 2.0 (DELTA)  
 **Date:** January 2026  
 **Network:** Base Mainnet (Chain ID: 8453)
 
@@ -27,6 +27,7 @@ The META-VE protocol uses a **two-tier admin structure**:
 | RToken | Ownable | META MSIG | ❌ No |
 | Meta | Custom MSIG | META MSIG | ❌ No |
 | EmissionsVoteLib | Ownable | META MSIG | ❌ No |
+| FeeSwapper | Ownable | META MSIG | ❌ No |
 | VeAeroBribes | Immutable | N/A (no admin) | ❌ No |
 | VeAeroLiquidation | Immutable | N/A (no admin) | ❌ No |
 | VoteLib | Immutable | N/A (no admin) | ❌ No |
@@ -45,6 +46,7 @@ The META-VE protocol uses a **two-tier admin structure**:
 | `setProposalVoteLib(address)` | Set protocol governance lib | ✅ Safe - enables new feature |
 | `setVoteLib(address)` | Set VoteLib for multi-NFT voting | ⚠️ Low - could break gauge voting |
 | `setEmissionsVoteLib(address)` | Set EmissionsVoteLib for Fed voting | ✅ Safe - enables Fed voting |
+| `setFeeSwapper(address)` | Set FeeSwapper for non-AERO fee conversion | ⚠️ Low - could break fee swapping |
 | `transferOwnership(address)` | Transfer owner role | ⚠️ Medium - one-time, irreversible |
 
 ### ❌ What Owner CANNOT Do
@@ -55,6 +57,7 @@ The META-VE protocol uses a **two-tier admin structure**:
 - Cannot modify fee splits or token allocations
 - Cannot mint/burn V-AERO, C-AERO, R-AERO
 - Cannot access bribe tokens (only Tokenisys in sweep window)
+- Cannot distribute META rewards (moved to CToken in DELTA)
 
 ---
 
@@ -80,21 +83,45 @@ The META-VE protocol uses a **two-tier admin structure**:
 
 ---
 
+## VToken.sol
+
+### Owner Functions (META MSIG)
+
+| Function | Purpose | One-Time? |
+|----------|---------|-----------|
+| `setSplitter(address)` | Link to VeAeroSplitter | ✅ Yes (reverts if already set) |
+| `setLiquidation(address)` | Link to VeAeroLiquidation | ✅ Yes (reverts if already set) |
+| `configureVotingStorage(maxPools, totalSupply)` | Set vote storage capacity | ❌ No (reconfigurable) |
+
+### ❌ What Owner CANNOT Do
+
+- Cannot mint V-AERO (only Splitter)
+- Cannot burn V-AERO (only Splitter)
+- Cannot transfer user V-AERO
+- Cannot unlock voted tokens
+
+---
+
 ## Meta.sol
 
 ### MSIG Functions (msigTreasury)
 
 | Function | Purpose | One-Time? |
 |----------|---------|-----------|
-| `setSplitter(address)` | Link to VeAeroSplitter | Changeable |
-| `setVToken(address)` | Link to VToken | Changeable |
+| `setSplitter(address)` | Link to VeAeroSplitter | ✅ Yes (reverts if already set) |
+| `setVToken(address)` | Link to VToken | ✅ Yes (reverts if already set) |
 | `setLPPool(address)` | Set META/AERO LP pool | Changeable |
 | `setPoolLPGauge(vePool, lpGauge)` | Set LP gauge for VE pool | Changeable |
 | `setMSIG(address)` | Transfer MSIG role | ⚠️ Irreversible |
 | `renounceL1ProofAuthority()` | Disable L1 proof control | ✅ One-time, irreversible |
 | `enableMultiVE()` | Enable Phase 2 multi-VE | ✅ One-time, irreversible |
 | `addVEPool(vePool, lpGauge)` | Add local VE pool | Changeable |
+| `addVEPool(vePool, chainId, lpGauge)` | Add remote VE pool | Changeable |
 | `removeVEPool(vePool)` | Remove VE pool | Changeable |
+| `setL1ProofVerifier(address)` | Set L1 proof verifier | Changeable (until renounced) |
+| `whitelistChain(uint256)` | Enable cross-chain | Changeable |
+| `removeChain(uint256)` | Disable chain | Changeable |
+| `setFeeContract(address)` | Set fee contract for multi-VE | Changeable |
 
 ### ❌ What MSIG CANNOT Do
 
@@ -105,6 +132,43 @@ The META-VE protocol uses a **two-tier admin structure**:
 - Cannot extract staked META
 - Cannot extract AERO fees held for users
 - Cannot modify fee percentages (immutable constants)
+
+---
+
+## EmissionsVoteLib.sol
+
+### Owner Functions (META MSIG)
+
+| Function | Purpose | One-Time? |
+|----------|---------|-----------|
+| `setCToken(address)` | Link to CToken | ✅ Yes (reverts if already set) |
+| `setSplitter(address)` | Link to VeAeroSplitter | ✅ Yes (reverts if already set) |
+
+### ❌ What Owner CANNOT Do
+
+- Cannot modify vote tallies
+- Cannot reset epoch votes (only Splitter via `resetEpoch()`)
+
+---
+
+## FeeSwapper.sol
+
+### Owner Functions (META MSIG)
+
+| Function | Purpose | One-Time? |
+|----------|---------|-----------|
+| `setRoute(token, routes)` | Configure swap route for token | ❌ No (reconfigurable) |
+| `disableToken(address)` | Disable token for swapping | ❌ No |
+| `enableToken(address)` | Re-enable disabled token | ❌ No |
+| `setSplitter(address)` | Set Splitter callback address | ❌ No (changeable) |
+| `setSlippage(uint256)` | Set slippage tolerance in BPS | ❌ No (changeable) |
+| `sweepDust(tokens, to)` | Recover stuck dust tokens | ❌ No |
+
+### ❌ What Owner CANNOT Do
+
+- Cannot swap on behalf of users
+- Cannot redirect swap output (always goes to Splitter via callback)
+- Cannot modify the Aerodrome Router (immutable)
 
 ---
 

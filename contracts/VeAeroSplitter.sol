@@ -13,29 +13,39 @@ import "./Interfaces.sol";
 import "./IVoteLib.sol";
 
 /**
- * @title VeAeroSplitter GAMMA
+ * @title VeAeroSplitter DELTA
  * @notice Wraps veAERO NFTs into fungible V-AERO and C-AERO tokens
  * @dev 
  *      
  * Architecture:
  *      - VeAeroLiquidation: Tracks C/V locks, phase transitions
  *      - VeAeroBribes: Snapshot/claim for bribe distribution
- *      - VeAeroSplitter: Deposits, voting, fee/rebase/meta claims, NFT custody
+ *      - VeAeroSplitter: Deposits, voting, fee/rebase claims, NFT custody
+ *      - FeeSwapper: Converts non-AERO fee tokens to AERO (DELTA)
  *      
  * Revenue Streams:
- *      1. EMISSIONS (Aerodrome weekly veAERO rebase):
+ *      1. REBASE (Aerodrome weekly veAERO emissions):
  *         - Master NFT locked amount grows automatically
  *         - C-AERO holders call claimRebase() → receive NEW V+C tokens
  *      
- *      2. TRADING FEES (liquid AERO from pools):
+ *      2. TRADING FEES (AERO from Aerodrome fee distributors):
  *         - collectFees() claims AERO → 50% to C holders, 50% to Meta
+ *         - Non-AERO tokens: FeeSwapper converts to AERO via processSwappedFees()
+ *         - C-AERO holders call claimFees() → receive AERO
  *      
- *      3. META REWARDS:
- *         - C-AERO holders call claimMeta() → receive META tokens
+ *      3. META REWARDS (from Meta contract - NOT Splitter):
+ *         - CToken.collectMeta() pulls from Meta.claimForVEPool()
+ *         - C-AERO holders call CToken.claimMeta() → receive META
  *      
  *      4. BRIBES (handled by VeAeroBribes):
  *         - collectBribes() claims from Aerodrome, tokens stay here
  *         - VeAeroBribes handles snapshot/claim via pullBribeToken()
+ *
+ * DELTA Changes from GAMMA:
+ *      - Removed: collectMeta(), claimMeta(), globalMetaIndex (META never flows to Splitter)
+ *      - Added: FeeSwapper integration for non-AERO fee tokens
+ *      - Added: processSwappedFees() callback from FeeSwapper
+ *      - Changed: onCTokenTransfer() re-indexes unclaimed fees instead of sweep to Tokenisys
  */
 contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     using SafeERC20 for IERC20;
@@ -80,7 +90,8 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     IProposalVoteLib public proposalVoteLib;
     IEmissionsVoteLib public emissionsVoteLib;
     
-    
+    address public feeSwapper;
+
     // ═══════════════════════════════════════════════════════════════
     // NFT STATE
     // ═══════════════════════════════════════════════════════════════
@@ -89,8 +100,6 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     uint256[] public pendingNftIds;
     uint256 public pendingNftBlock;
     uint256[] public splitNftIds; 
-
-
     
     // ═══════════════════════════════════════════════════════════════
     // EPOCH STATE
@@ -119,13 +128,6 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     mapping(address => uint256) public userRebaseCheckpoint;
     uint256 public lastTrackedLocked;
     
-    // ═══════════════════════════════════════════════════════════════
-    // META REWARD DISTRIBUTION
-    // ═══════════════════════════════════════════════════════════════
-    
-    uint256 public globalMetaIndex;
-    mapping(address => uint256) public userMetaCheckpoint;
-    uint256 public totalMetaIndexed;
     
     // ═══════════════════════════════════════════════════════════════
     // BRIBE WHITELIST (tokens held here, claims via VeAeroBribes)
@@ -173,10 +175,7 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     // Fee claim events
     event FeesCollected(uint256 totalAero, uint256 holderShare, uint256 metaShare, uint256 newFeeIndex);
     event FeesClaimed(address indexed user, uint256 amount);
-    
-    // META reward events
-    event MetaCollected(uint256 amount, uint256 newMetaIndex);
-    event MetaClaimed(address indexed user, uint256 amount);
+    event FeeSwapperUpdated(address indexed newFeeSwapper);
     
     // Bribe events
     event BribeTokenWhitelisted(address indexed token, uint256 epoch);
@@ -184,11 +183,7 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     event BribesSwept(address indexed token, address indexed to, uint256 amount);
     event RebaseCollected(uint256 amount);
     
-    // Transfer settlement events
-    event FeesSweptToTokenisys(address indexed from, uint256 amount);
-    event MetaSweptToTokenisys(address indexed from, uint256 amount);
-    event RebaseSweptToTokenisys(address indexed from, uint256 amount);
-    
+
     // Rebase events
     event RebaseClaimed(address indexed user, uint256 vAmount, uint256 cAmount);
     event RebaseIndexUpdated(uint256 growth, uint256 newGlobalIndex, uint256 totalBacking);
@@ -219,8 +214,7 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     error Unauthorized();
     error InvalidGauge(address pool);
     error WindowClosed();
-
-
+   
     // ═══════════════════════════════════════════════════════════════
     // MODIFIERS
     // ═══════════════════════════════════════════════════════════════
@@ -292,7 +286,6 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         votingStartTime = epochEndTime - 7 days + 1 hours;
         votingEndTime = epochEndTime - 2 hours;
         globalFeeIndex = PRECISION;
-        globalMetaIndex = PRECISION;
         globalRebaseIndex = PRECISION;
         
         emit EpochReset(1, epochEndTime);
@@ -398,9 +391,6 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         // Initialize checkpoints for new depositors
         if (userFeeCheckpoint[msg.sender] == 0) {
             userFeeCheckpoint[msg.sender] = globalFeeIndex;
-        }
-        if (userMetaCheckpoint[msg.sender] == 0) {
-            userMetaCheckpoint[msg.sender] = globalMetaIndex;
         }
         if (userRebaseCheckpoint[msg.sender] == 0) {
             userRebaseCheckpoint[msg.sender] = globalRebaseIndex;
@@ -674,12 +664,32 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         
         aerodromeVoter.claimFees(feeDistributors, tokens, masterNftId);
         
+        // Push non-AERO tokens to FeeSwapper
+        address _feeSwapper = feeSwapper;
+        if (_feeSwapper != address(0)) {
+            uint256 len = tokens.length;
+            for (uint256 i; i < len; ) {
+                uint256 tLen = tokens[i].length;
+                for (uint256 j; j < tLen; ) {
+                    address token = tokens[i][j];
+                    if (token != address(AERO_TOKEN)) {
+                        uint256 bal = IERC20(token).balanceOf(address(this));
+                        if (bal > 0) {
+                            IERC20(token).safeTransfer(_feeSwapper, bal);
+                        }
+                    }
+                    unchecked { ++j; }
+                }
+                unchecked { ++i; }
+            }
+        }
+        
         uint256 balanceAfter = AERO_TOKEN.balanceOf(address(this));
         uint256 collected = balanceAfter - balanceBefore;
         
         if (collected == 0) return;
         
-        uint256 holderShare = collected / 2;
+        uint256 holderShare = collected >> 1;
         uint256 metaShare = collected - holderShare;
         
         uint256 cSupply = C_TOKEN.totalSupply();
@@ -691,8 +701,28 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
             AERO_TOKEN.approve(address(META_TOKEN), metaShare);
             IMeta(address(META_TOKEN)).receiveFees(metaShare);
         }
+    
+    emit FeesCollected(collected, holderShare, metaShare, globalFeeIndex);
+}
+
+    function processSwappedFees(uint256 amount) external {
+        if (msg.sender != feeSwapper) revert Unauthorized();
+        if (amount == 0) return;
         
-        emit FeesCollected(collected, holderShare, metaShare, globalFeeIndex);
+        uint256 holderShare = amount >> 1;
+        uint256 metaShare = amount - holderShare;
+        
+        uint256 cSupply = C_TOKEN.totalSupply();
+        if (cSupply > 0) {
+            globalFeeIndex += (holderShare * PRECISION) / cSupply;
+        }
+        
+        emit FeesCollected(amount, holderShare, metaShare, globalFeeIndex);
+        
+        if (metaShare > 0) {
+            AERO_TOKEN.approve(address(META_TOKEN), metaShare);
+            IMeta(address(META_TOKEN)).receiveFees(metaShare);
+        }
     }
     
     function claimFees() external nonReentrant returns (uint256 owed) {
@@ -712,47 +742,6 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
         
         emit FeesClaimed(msg.sender, owed);
     }
-    
-    // ═══════════════════════════════════════════════════════════════
-    // META COLLECTION & CLAIMS
-    // ═══════════════════════════════════════════════════════════════
-    
-    function collectMeta() external nonReentrant notInLiquidation {
-        uint256 balance = META_TOKEN.balanceOf(address(this));
-        if (balance == 0) return;
-        
-        uint256 newAmount = balance - totalMetaIndexed;
-        if (newAmount == 0) return;
-        
-        uint256 cSupply = C_TOKEN.totalSupply();
-        if (cSupply > 0) {
-            globalMetaIndex += (newAmount * PRECISION) / cSupply;
-        }
-        
-        totalMetaIndexed = balance;
-        
-        emit MetaCollected(newAmount, globalMetaIndex);
-    }
-    
-    function claimMeta() external nonReentrant returns (uint256 owed) {
-        uint256 checkpoint = userMetaCheckpoint[msg.sender];
-        if (checkpoint == 0) {
-            checkpoint = PRECISION;
-        }
-        
-        uint256 balance = C_TOKEN.balanceOf(msg.sender);
-        owed = (balance * (globalMetaIndex - checkpoint)) / PRECISION;
-        
-        userMetaCheckpoint[msg.sender] = globalMetaIndex;
-        
-        if (owed > 0) {
-            totalMetaIndexed -= owed;
-            META_TOKEN.safeTransfer(msg.sender, owed);
-        }
-        
-        emit MetaClaimed(msg.sender, owed);
-    }
-    
     // ═══════════════════════════════════════════════════════════════
     // REBASE CLAIMS
     // ═══════════════════════════════════════════════════════════════
@@ -860,82 +849,41 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     // ═══════════════════════════════════════════════════════════════
     
     function onCTokenTransfer(
-        address from,
-        address to,
-        uint256 amount
-    ) external {
-        if (msg.sender != address(C_TOKEN)) revert Unauthorized();
-        if (from == address(0) || to == address(0)) return;
-        if (from == to) return;  // Self-transfer is no-op
-        
-        // ═══════════════════════════════════════════════════════════════════
-        // SENDER: Sweep unclaimed rewards on transferred tokens to Tokenisys
-        // ═══════════════════════════════════════════════════════════════════
-        uint256 fromFeeCheckpoint = userFeeCheckpoint[from];
-        if (fromFeeCheckpoint == 0) fromFeeCheckpoint = PRECISION;
-        uint256 unclaimedFees = (amount * (globalFeeIndex - fromFeeCheckpoint)) / PRECISION;
-        
-        uint256 fromMetaCheckpoint = userMetaCheckpoint[from];
-        if (fromMetaCheckpoint == 0) fromMetaCheckpoint = PRECISION;
-        uint256 unclaimedMeta = (amount * (globalMetaIndex - fromMetaCheckpoint)) / PRECISION;
-        
-        uint256 fromRebaseCheckpoint = userRebaseCheckpoint[from];
-        uint256 unclaimedRebase = 0;
-        if (fromRebaseCheckpoint > 0) {
-            unclaimedRebase = (amount * (globalRebaseIndex - fromRebaseCheckpoint)) / PRECISION;
-        }
-        
-        // Sender checkpoint unchanged - they can still claim on remaining balance
-        
-        // ═══════════════════════════════════════════════════════════════════
-        // RECIPIENT: Blend checkpoints (existing tokens keep history, new get global)
-        // ═══════════════════════════════════════════════════════════════════
-        uint256 toBalanceAfter = C_TOKEN.balanceOf(to);
-        uint256 toBalanceBefore = toBalanceAfter - amount;
-        
-        if (toBalanceBefore == 0) {
-            userFeeCheckpoint[to] = globalFeeIndex;
-            userMetaCheckpoint[to] = globalMetaIndex;
-            userRebaseCheckpoint[to] = globalRebaseIndex;
-        } else {
-            uint256 toFeeCheckpoint = userFeeCheckpoint[to];
-            if (toFeeCheckpoint == 0) toFeeCheckpoint = PRECISION;
-            
-            uint256 toMetaCheckpoint = userMetaCheckpoint[to];
-            if (toMetaCheckpoint == 0) toMetaCheckpoint = PRECISION;
-            
-            uint256 toRebaseCheckpoint = userRebaseCheckpoint[to];
-            if (toRebaseCheckpoint == 0) toRebaseCheckpoint = globalRebaseIndex;
-            
-            userFeeCheckpoint[to] = ((toBalanceBefore * toFeeCheckpoint) + (amount * globalFeeIndex) + toBalanceAfter - 1) / toBalanceAfter;
-            userMetaCheckpoint[to] = ((toBalanceBefore * toMetaCheckpoint) + (amount * globalMetaIndex) + toBalanceAfter - 1) / toBalanceAfter;
-            userRebaseCheckpoint[to] = ((toBalanceBefore * toRebaseCheckpoint) + (amount * globalRebaseIndex) + toBalanceAfter - 1) / toBalanceAfter;
-        }
-        
-        // ═══════════════════════════════════════════════════════════════════
-        // SWEEP to Tokenisys
-        // ═══════════════════════════════════════════════════════════════════
-        if (unclaimedMeta > 0) {
-            totalMetaIndexed -= unclaimedMeta;
-            META_TOKEN.safeTransfer(TOKENISYS, unclaimedMeta);
-            emit MetaSweptToTokenisys(from, unclaimedMeta);
-        }
-        
-        if (unclaimedFees > 0) {
-            AERO_TOKEN.safeTransfer(TOKENISYS, unclaimedFees);
-            emit FeesSweptToTokenisys(from, unclaimedFees);
-        }
-        
-        if (unclaimedRebase > 0) {
-            uint256 metaAmount = (unclaimedRebase * META_FEE_BPS) / 10000;  // 9%
-            //V-AERO: 91% to Tokenisys, 9% to META
-            V_TOKEN.mint(TOKENISYS, unclaimedRebase-metaAmount);
-            V_TOKEN.mint(address(META_TOKEN),metaAmount);
-            C_TOKEN.mint(TOKENISYS, unclaimedRebase);
-            adjustedRebaseBacking += unclaimedRebase;
-            emit RebaseSweptToTokenisys(from, unclaimedRebase);
-        }
+    address from,
+    address to,
+    uint256 amount
+) external {
+    if (msg.sender != address(C_TOKEN)) revert Unauthorized();
+    if (from == address(0) || to == address(0)) return;
+    if (from == to) return;
+    
+    uint256 cSupply = C_TOKEN.totalSupply();
+    
+    // Re-index sender's unclaimed fees to all holders
+    uint256 fromFeeCheckpoint = userFeeCheckpoint[from];
+    if (fromFeeCheckpoint == 0) fromFeeCheckpoint = PRECISION;
+    uint256 unclaimedFees = (amount * (globalFeeIndex - fromFeeCheckpoint)) / PRECISION;
+    if (unclaimedFees > 0 && cSupply > 0) {
+        globalFeeIndex += (unclaimedFees * PRECISION) / cSupply;
     }
+    
+    // Recipient checkpoint blending
+    uint256 toBalanceAfter = C_TOKEN.balanceOf(to);
+    uint256 toBalanceBefore = toBalanceAfter - amount;
+    
+    if (toBalanceBefore == 0) {
+        userFeeCheckpoint[to] = globalFeeIndex;
+        userRebaseCheckpoint[to] = globalRebaseIndex;
+    } else {
+        uint256 tfc = userFeeCheckpoint[to];
+        if (tfc == 0) tfc = PRECISION;
+        userFeeCheckpoint[to] = ((toBalanceBefore * tfc) + (amount * globalFeeIndex) + toBalanceAfter - 1) / toBalanceAfter;
+        
+        uint256 trc = userRebaseCheckpoint[to];
+        if (trc == 0) trc = globalRebaseIndex;
+        userRebaseCheckpoint[to] = ((toBalanceBefore * trc) + (amount * globalRebaseIndex) + toBalanceAfter - 1) / toBalanceAfter;
+    }
+}
 
     // ═══════════════════════════════════════════════════════════════
     // BRIBE COLLECTION & PULL 
@@ -1151,6 +1099,11 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     // ═══════════════════════════════════════════════════════════════
     // INTERNAL
     // ═══════════════════════════════════════════════════════════════
+
+    function setFeeSwapper(address _feeSwapper) external onlyOwner {
+        feeSwapper = _feeSwapper;
+        emit FeeSwapperUpdated(_feeSwapper);
+    }
     
     function _isDepositWindowOpen() internal view returns (bool) {
         uint256 dayOfWeek = ((block.timestamp / 1 days) + 4) % 7;
@@ -1202,4 +1155,3 @@ contract VeAeroSplitter is Ownable, ReentrancyGuard, IERC721Receiver {
     }
 
 }
-

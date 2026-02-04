@@ -1,6 +1,6 @@
 # META-VE Protocol Reward Claim Paths
 
-**Version:** 1.0  
+**Version:** 2.0 (DELTA)  
 **Date:** January 2026  
 **Network:** Base Mainnet (Chain ID: 8453)
 
@@ -32,27 +32,33 @@ CToken.claimMeta() → transfers META to user
 
 ---
 
-### 1.2 Trading Fees (from Splitter - 50% of veAERO fees)
+### 1.2 Trading Fees — Splitter Direct (50% of AERO)
 
 **Flow:**
 ```
 Aerodrome Voter → claimFees() on masterNFT
     ↓
-Splitter.collectFees() → receives AERO
+Splitter.collectFees() → receives fee tokens
+    ├─ AERO received directly:
+    │     50% → globalFeeIndex (for C holders via Splitter.claimFees())
+    │     50% → Meta.receiveFees()
+    └─ Non-AERO tokens → FeeSwapper
+          ↓
+          FeeSwapper.swap() → converts to AERO
+          ↓
+          Splitter.processSwappedFees() → 50/50 split as above
     ↓
-    50% → globalFeeIndex (for C holders)
-    50% → Meta.receiveFees()
-    ↓
-Splitter.claimFees() → transfers AERO to user
+Splitter.claimFees() → transfers AERO to user (50% direct share)
 ```
 
 **Functions:**
 - `splitter.collectFees(feeDistributors, tokens)` - Claims from Aerodrome
 - `splitter.claimFees()` - User claims their share from globalFeeIndex
+- `feeSwapper.swap()` - Convert pending non-AERO tokens to AERO (anyone can call)
 
 ---
 
-### 1.3 Trading Fees (from Meta - via poolFeeAccrued)
+### 1.3 Trading Fees — Via Meta (remaining share via poolFeeAccrued)
 
 **Flow:**
 ```
@@ -125,10 +131,11 @@ Next epoch: bribes.claimBribes(tokens) → pulls from Splitter to user
 
 On C-AERO transfers, the `onCTokenTransfer()` hook handles reward settlement:
 
-**Sender Settlement:**
-- Unclaimed Splitter rewards (fees, META, rebase) on the **transferred amount** are swept to Tokenisys
-- Sender's checkpoint remains **unchanged** - they can still claim on remaining balance
-- CToken rewards (via `feePerCToken`/`metaPerCToken`) are preserved in `userClaimable` storage
+**Sender Settlement (DELTA — Re-indexing):**
+- Unclaimed Splitter fees on the **transferred amount** are re-distributed to ALL C-AERO holders by incrementing `globalFeeIndex`
+- Sender's fee checkpoint is **NOT updated** — they can still claim on remaining balance
+- No sweep to Tokenisys
+- CToken rewards (via `feePerCToken`/`metaPerCToken`) are preserved in `userClaimable` storage via checkpoint/debt pattern in CToken._update()
 
 **Recipient Settlement:**
 - New holders are assigned current global index values (no windfall)
@@ -138,11 +145,7 @@ On C-AERO transfers, the `onCTokenTransfer()` hook handles reward settlement:
   ```
 
 **Self-Transfer Guard:**
-- Self-transfers (`from == to`) are no-op - no sweep, no checkpoint change
-
-**Rebase Sweep Split:**
-- V-AERO: 91% to Tokenisys, 9% to META contract
-- C-AERO: 100% to Tokenisys
+- Self-transfers (`from == to`) are no-op — no re-index, no checkpoint change
 
 ---
 
@@ -153,7 +156,6 @@ On C-AERO transfers, the `onCTokenTransfer()` hook handles reward settlement:
 | Reward Type | Collect Function | Claim Function | Index Variable |
 |-------------|------------------|----------------|----------------|
 | Splitter Fees | `splitter.collectFees()` | `splitter.claimFees()` | `globalFeeIndex` |
-| Splitter Meta | `splitter.collectMeta()` | `splitter.claimMeta()` | `globalMetaIndex` |
 | CToken Fees | `cToken.collectFees()` | `cToken.claimFees()` | `feePerCToken` |
 | CToken Meta | `cToken.collectMeta()` | `cToken.claimMeta()` | `metaPerCToken` |
 | Rebase | `splitter.collectRebase()` | `splitter.claimRebase()` | `globalRebaseIndex` |
@@ -161,9 +163,9 @@ On C-AERO transfers, the `onCTokenTransfer()` hook handles reward settlement:
 
 ### Important Notes
 
-1. **Splitter `collectMeta()`** distributes 9% deposit fee META held at splitter
-2. **CToken `collectMeta()`** pulls META staker rewards from Meta contract
-3. **These are DIFFERENT reward streams** - don't mix pending/claim functions
+1. **CToken `collectMeta()`** pulls META from Meta.claimForVEPool() — the ONLY META claim path for C-AERO holders
+2. **CToken `collectFees()`** pulls AERO from Meta.claimFeesForVEPool() — the Meta portion of trading fees
+3. **Splitter `claimFees()`** claims the direct 50% AERO share — separate from CToken.claimFees()
 
 4. **`pendingFees()` and `pendingMeta()` in CToken** include **uncollected** rewards from Meta
    - This is a **preview** of what will be available after collection
@@ -173,9 +175,7 @@ On C-AERO transfers, the `onCTokenTransfer()` hook handles reward settlement:
    - This crystallizes the fee/META index before setting their debt
    - Prevents front-running fee collection
 
-6. **Transfer Protection** - Transfers sweep unclaimed Splitter rewards to Tokenisys
-   - Sender can still claim on remaining balance (checkpoint unchanged)
-   - Recipient checkpoint is blended with round-UP (no windfall)
+6. **Transfer Protection** - Transfers re-index unclaimed Splitter fees to all C-AERO holders (DELTA). Sender checkpoint unchanged, recipient checkpoint blended with round-UP.
 
 ---
 
@@ -185,7 +185,8 @@ On C-AERO transfers, the `onCTokenTransfer()` hook handles reward settlement:
 
 | Reward | Source | Collect | Claim |
 |--------|--------|---------|-------|
-| AERO Fees | Meta | `cToken.collectFees()` | `cToken.claimFees()` |
+| AERO Fees (Splitter) | Splitter | `splitter.collectFees()` | `splitter.claimFees()` |
+| AERO Fees (Meta) | Meta | `cToken.collectFees()` | `cToken.claimFees()` |
 | META | Meta | `cToken.collectMeta()` | `cToken.claimMeta()` |
 | Rebase | Splitter | `splitter.collectRebase()` | `splitter.claimRebase()` |
 

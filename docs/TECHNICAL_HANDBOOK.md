@@ -1,6 +1,6 @@
 # META-VE Technical Handbook
 
-**Version:** 1.0  
+**Version:** 2.0 (DELTA)  
 **Date:** January 2026  
 **Status:** Production - Mainnet Deployed  
 **Network:** Base Mainnet (Chain ID: 8453)  
@@ -166,6 +166,11 @@ The protocol spans 9 deployed contracts plus 2 libraries. This separation exists
 |VeAeroBribes |    |VeAeroLiquidation |    |EmissionsVote|
 | (Snapshots) |    |    (Winddown)    |    |    Lib      |
 +-------------+    +------------------+    +-------------+
+                                                  |
+                                           +------+------+
+                                           | FeeSwapper  |
+                                           | (Non-AERO)  |
+                                           +-------------+
 ```
 
 ### 3.3 Contract Size Analysis
@@ -179,6 +184,7 @@ The protocol spans 9 deployed contracts plus 2 libraries. This separation exists
 | L1ProofVerifier | 6,203 bytes | 25.2% | Cross-chain proofs |
 | VeAeroBribes | 5,353 bytes | 21.8% | Bribe distribution |
 | VeAeroLiquidation | 4,367 bytes | 17.8% | Liquidation phases |
+| FeeSwapper | ~3,500 bytes | 14.2% | Non-AERO conversion |
 | RToken | 2,383 bytes | 9.7% | Receipt token |
 | VoteLib | 2,106 bytes | 8.6% | Vote calculation |
 | EmissionsVoteLib | ~800 bytes | 3.3% | Fed vote tracking |
@@ -195,11 +201,12 @@ VeAeroSplitter is the protocol's nerve center, handling:
 
 1. **NFT Custody**: Receives, holds, and consolidates veAERO NFTs
 2. **Token Minting**: Calls `mint()` on VToken and CToken
-3. **Fee Distribution**: Collects from Aerodrome, distributes to C-AERO holders
+3. **Fee Distribution**: Collects from Aerodrome, distributes to C-AERO holders (direct 50%) and Meta (50%)
 4. **Rebase Distribution**: Claims emissions, mints new V+C tokens
 5. **Vote Execution**: Aggregates votes, calls Aerodrome Voter
 6. **Bribe Handling**: Collects bribes, coordinates with VeAeroBribes
-7. **Transfer Settlement**: Handles C-AERO transfer hooks
+7. **Transfer Settlement**: Handles C-AERO transfer hooks (re-indexing)
+8. **FeeSwapper Coordination**: Routes non-AERO tokens to FeeSwapper, receives converted AERO via callback
 
 ### 4.2 NFT Consolidation Strategy
 
@@ -258,12 +265,15 @@ uint256 public cachedTotalVLockedForVoting;  // Snapshot for bribe calculations
 // === DISTRIBUTION INDICES ===
 uint256 public globalFeeIndex;        // AERO fees per C-AERO (scaled by 1e18)
 uint256 public globalRebaseIndex;     // Rebase growth factor (scaled by 1e18)
-uint256 public globalMetaIndex;       // META per C-AERO (scaled by 1e18)
+// NOTE: META distribution moved to CToken in DELTA
+// globalMetaIndex, userMetaCheckpoint removed from Splitter
 
 // === USER CHECKPOINTS ===
 mapping(address => uint256) public userFeeCheckpoint;     // Last claimed fee index
 mapping(address => uint256) public userRebaseCheckpoint;  // Last claimed rebase index
-mapping(address => uint256) public userMetaCheckpoint;    // Last claimed META index
+
+// === FEESWAPPER ===
+address public feeSwapper;            // FeeSwapper contract for non-AERO conversion
 ```
 
 ### 4.4 Critical Functions
@@ -281,9 +291,14 @@ mapping(address => uint256) public userMetaCheckpoint;    // Last claimed META i
 - Anyone can call (MEV opportunity)
 
 **`collectFees(feeDistributors, tokens)`**
-- Claims AERO from Aerodrome fee distributors
-- Splits 50% to C-AERO holders (updates globalFeeIndex)
-- Splits 50% to Meta contract (for staker rewards)
+- Claims fee tokens from Aerodrome fee distributors
+- AERO: Splits 50% to C-AERO holders (updates globalFeeIndex), 50% to Meta
+- Non-AERO: Routes to FeeSwapper for conversion
+
+**`processSwappedFees(uint256 amount)`**
+- Callback from FeeSwapper only
+- Receives converted AERO from FeeSwapper
+- Splits 50/50 and updates globalFeeIndex, same as direct AERO
 
 **`claimFees()`**
 - Calculates user's pending: `balance * (globalIndex - userCheckpoint) / PRECISION`
@@ -336,8 +351,9 @@ function vote(address pool, uint256 amount) external {
 
 **Key Design Decisions**:
 
-1. **Debt-Based Accounting**: Preserves rewards across transfers
+1. **Debt-Based META Accounting**: Preserves rewards across transfers
 ```solidity
+uint256 public metaPerCToken;
 mapping(address => uint256) public userMetaDebt;
 mapping(address => uint256) public userClaimableMeta;
 
@@ -352,7 +368,25 @@ function _updateUserDebt(address user) internal {
 }
 ```
 
-2. **Transfer Hook**: Notifies Splitter for settlement
+2. **Debt-Based AERO Fee Accounting** (DELTA addition): Parallel to META
+```solidity
+IERC20 public aero;
+uint256 public feePerCToken;
+mapping(address => uint256) public userFeeDebt;
+mapping(address => uint256) public userClaimableFee;
+
+function _checkpointUserFee(address user) internal {
+    uint256 balance = balanceOf(user);
+    uint256 owed = (balance * feePerCToken / PRECISION) - userFeeDebt[user];
+    userClaimableFee[user] += owed;
+}
+
+function _updateUserFeeDebt(address user) internal {
+    userFeeDebt[user] = balanceOf(user) * feePerCToken / PRECISION;
+}
+```
+
+3. **Transfer Hook**: Notifies Splitter for settlement
 ```solidity
 function _update(address from, address to, uint256 amount) internal override {
     if (from != address(0)) {
@@ -368,19 +402,39 @@ function _update(address from, address to, uint256 amount) internal override {
 }
 ```
 
-3. **Emissions Voting**: C-AERO holders vote on Aerodrome's "Fed" emissions rate
+4. **Emissions Voting**: C-AERO holders vote on Aerodrome's "Fed" emissions rate
 ```solidity
-function voteEmissions(int8 choice, uint256 amount) external {
-    // choice: -1 (decrease), 0 (hold), +1 (increase)
-    // amount in WHOLE TOKENS (not wei)
-    if (amount != amount / 1e18 * 1e18) revert MustVoteWholeTokens();
-    
-    lockedAmount[msg.sender] += amount * 1e18;
-    lockedUntil[msg.sender] = splitter.epochEndTime();
-    
-    emissionsVoteLib.recordVote(msg.sender, choice, amount);
+function voteEmissions(int8 choice, uint256 amount) external nonReentrant {
+    // CHECKS
+    if (choice < -1 || choice > 1) revert InvalidChoice();
+    if (amount == 0) revert ZeroAmount();
+    if (amount % 1e18 != 0) revert MustVoteWholeTokens();  // INPUT IS WEI
+
+    // Timing checks
+    uint256 votingStart = _splitter.votingStartTime();
+    uint256 votingEnd = _splitter.votingEndTime();
+    if (block.timestamp < votingStart) revert VotingNotStarted();
+    if (block.timestamp > votingEnd) revert VotingEnded();
+
+    uint256 available = unlockedBalanceOf(msg.sender);
+    if (available < amount) revert InsufficientUnlockedBalance();
+
+    // EFFECTS
+    uint256 epochEnd = _splitter.epochEndTime();
+    if (block.timestamp >= lockedUntil[msg.sender]) {
+        lockedAmount[msg.sender] = amount;      // SETS (previous lock expired)
+    } else {
+        lockedAmount[msg.sender] += amount;     // ADDS to existing lock
+    }
+    lockedUntil[msg.sender] = epochEnd;
+
+    // INTERACTIONS
+    emissionsVoteLib.recordVote(msg.sender, choice, amount / 1e18);  // DIVIDES to whole
+    emit EmissionsVoted(msg.sender, choice, amount);
 }
 ```
+
+**Key**: Input is **wei** that must be whole-token multiples. `recordVote` receives `amount / 1e18` (whole tokens). Lock logic checks if previous lock expired (set vs add).
 
 ### 5.3 RToken (R-AERO)
 
@@ -424,19 +478,20 @@ This creates:
 
 ## 6. Reward Distribution Architecture
 
-### 6.1 Five Reward Streams
+### 6.1 Reward Streams
 
 C-AERO and V-AERO holders receive rewards through distinct mechanisms:
 
 | Reward | Token | Source | Mechanism | Who Claims |
 |--------|-------|--------|-----------|------------|
-| Trading Fees | AERO | Aerodrome pools | Index-based | C-AERO holders |
-| META Rewards | META | DeltaForce emissions | Index-based | C-AERO holders |
+| Splitter Fees | AERO | Aerodrome pools (50% direct) | Index-based (globalFeeIndex) | C-AERO holders |
+| CToken Fees | AERO | Aerodrome pools (via Meta) | Debt-based (feePerCToken) | C-AERO holders |
+| META Rewards | META | DeltaForce emissions | Debt-based (metaPerCToken) | C-AERO holders |
 | Rebase | V+C-AERO | Aerodrome emissions | Mint on claim | C-AERO holders |
 | Bribes | Various | Aerodrome bribes | Snapshot-based | V-AERO voters |
 | LP Incentives | META | DeltaForce emissions | Gauge deposit | LP providers |
 
-### 6.2 Fee Distribution Flow
+### 6.2 Fee Distribution Flow (DELTA)
 
 ```
 Aerodrome Pools
@@ -453,26 +508,32 @@ Aerodrome Pools
 |  VeAeroSplitter  |
 +--------+---------+
          |
-    +----+----+
-    |         |
-    v         v
-  50%       50%
-    |         |
-    v         v
-+-------+  +------+
-|C-AERO |  | Meta |
-|holders|  |      |
-+-------+  +--+---+
-              |
-         +----+----+
-         |         |
-         v         v
-       S * 50%  (1-S) * 50%
-         |         |
-         v         v
-    +--------+  +--------+
-    | Stakers|  | C-AERO |
-    +--------+  +--------+
+    +----+----+--------------------+
+    |         |                    |
+    |     AERO tokens        Non-AERO tokens
+    |         |                    |
+    |    +----+----+               v
+    |    |         |        +-------------+
+    |   50%       50%       | FeeSwapper  |
+    |    |         |        +------+------+
+    |    v         v               |
+    |+-------+  +------+    processSwappedFees()
+    ||C-AERO |  | Meta |          |
+    ||holders|  |      |     +----+----+
+    ||(claim  |  +--+---+    |         |
+    || via    |     |       50%       50%
+    ||Splitter|+----+----+   |         |
+    |+-------+|         |   v         v
+    |         v         v (same as direct AERO)
+    |       S * 50%  (1-S) * 50%
+    |         |         |
+    |         v         v
+    |    +--------+  +---------+
+    |    | Stakers|  | CToken  |
+    |    | (Meta  |  | (claim  |
+    |    |  claim)|  |  via    |
+    |    +--------+  | CToken) |
+    |                +---------+
 ```
 
 ### 6.3 Index-Based Distribution Deep Dive
@@ -619,41 +680,56 @@ modifier ensureCurrentEpoch() {
 | `claimFees()` | C-AERO holder | Pending > 0 |
 | `executeGaugeVote()` | Anyone | Execution window, not already executed |
 | `collectFees()` | Anyone | None (MEV-incentivized) |
+| `processSwappedFees()` | FeeSwapper only | `msg.sender == feeSwapper` |
 | `setSplitter()` | Owner | One-time only (reverts if set) |
 | `transferOwnership()` | Owner | Irreversible |
 
-### 8.2 Transfer Settlement (Windfall Protection)
+### 8.2 Transfer Settlement (Windfall Protection — DELTA Re-indexing)
 
 **Problem**: When C-AERO transfers, unclaimed rewards could be "sniped":
 1. Alice has 100 C-AERO with 10 AERO pending
 2. Alice transfers 100 C-AERO to Bob
 3. Bob immediately claims 10 AERO (Alice's rewards!)
 
-**Solution**: `onCTokenTransfer()` hook settles rewards on transfer:
+**Solution**: `onCTokenTransfer()` hook handles two-layer settlement:
 
+**Layer 1: CToken debt/claimable (handled in CToken._update)**
+```solidity
+// Before super._update():
+_checkpointUser(from);      // Crystallize META owed → userClaimableMeta
+_checkpointUserFee(from);   // Crystallize AERO owed → userClaimableFee
+// After super._update():
+_updateUserDebt(from);      // Reset debt to new balance * index
+_updateUserDebt(to);        // Set debt for new balance * index
+```
+
+**Layer 2: Splitter re-indexing (DELTA)**
 ```solidity
 function onCTokenTransfer(address from, address to, uint256 amount) external {
     if (from == to) return;  // Self-transfer guard
     
-    // Calculate unclaimed on transferred amount (not balance!)
-    uint256 unclaimedFees = (amount * (globalFeeIndex - userFeeCheckpoint[from])) / PRECISION;
+    uint256 cSupply = C_TOKEN.totalSupply();
     
-    // Sweep to Tokenisys (sender forfeits on transferred portion)
-    if (unclaimedFees > 0) {
-        AERO_TOKEN.safeTransfer(TOKENISYS, unclaimedFees);
+    // Re-index sender's unclaimed fees to all holders
+    uint256 fromFeeCheckpoint = userFeeCheckpoint[from];
+    if (fromFeeCheckpoint == 0) fromFeeCheckpoint = PRECISION;
+    uint256 unclaimedFees = (amount * (globalFeeIndex - fromFeeCheckpoint)) / PRECISION;
+    if (unclaimedFees > 0 && cSupply > 0) {
+        globalFeeIndex += (unclaimedFees * PRECISION) / cSupply;
     }
-    
     // Sender checkpoint UNCHANGED - can still claim on remaining balance
     
     // Recipient checkpoint: blend with round-UP
-    if (recipientBalanceBefore == 0) {
+    if (toBalanceBefore == 0) {
         userFeeCheckpoint[to] = globalFeeIndex;
     } else {
-        uint256 numerator = (balBefore * oldCheckpoint) + (amount * globalFeeIndex);
-        userFeeCheckpoint[to] = (numerator + balAfter - 1) / balAfter;  // Round UP
+        uint256 toBalanceAfter = toBalanceBefore + amount;
+        userFeeCheckpoint[to] = ((toBalanceBefore * tfc) + (amount * globalFeeIndex) + toBalanceAfter - 1) / toBalanceAfter;
     }
 }
 ```
+
+**Why re-indexing instead of sweep?** Transferred-amount unclaimed fees benefit ALL C-AERO holders proportionally, not a single recipient like Tokenisys. This is more equitable.
 
 **Why round UP?**
 Prevents dust accumulation attack:
@@ -679,13 +755,14 @@ Combined with CEI pattern, this provides defense-in-depth.
 
 ## 9. Index-Based Accounting
 
-### 9.1 The Three Indices
+### 9.1 The Two Splitter Indices
 
 | Index | Purpose | Updates When | Initial Value |
 |-------|---------|--------------|---------------|
-| `globalFeeIndex` | AERO per C-AERO | `collectFees()` | 1e18 |
-| `globalMetaIndex` | META per C-AERO | `collectMeta()` | 1e18 |
+| `globalFeeIndex` | AERO per C-AERO | `collectFees()` / `processSwappedFees()` | 1e18 |
 | `globalRebaseIndex` | Rebase growth factor | `updateRebaseIndex()` | 1e18 |
+
+*Note: META distribution uses CToken's debt-based `metaPerCToken` index, not a Splitter global index.*
 
 ### 9.2 Fee Index Mathematics
 
@@ -806,13 +883,13 @@ Remote chains verify Base state via L1 state proofs:
 | `votePassive(amount)` | V-AERO holder | Follow active voters |
 | `executeGaugeVote()` | Public | Submit votes to Aerodrome |
 | `collectFees(dists, tokens)` | Public | Claim fees from Aerodrome |
-| `claimFees()` | C-AERO holder | Claim AERO fees |
-| `collectMeta()` | Public | Pull META from depositor fee |
-| `claimMeta()` | C-AERO holder | Claim META rewards |
+| `claimFees()` | C-AERO holder | Claim AERO fees (Splitter direct share) |
+| `processSwappedFees(amount)` | FeeSwapper only | Process converted AERO from FeeSwapper |
 | `collectRebase()` | Public | Claim emissions from Aerodrome |
 | `claimRebase()` | C-AERO holder | Mint rebase V+C tokens |
 | `collectBribes(bribes, tokens)` | Public | Claim bribes from Aerodrome |
 | `resetEpoch()` | Public | Advance to next epoch |
+| `setFeeSwapper(address)` | Owner | Set FeeSwapper address |
 
 ### 13.2 CToken Functions
 
@@ -821,9 +898,24 @@ Remote chains verify Base state via L1 state proofs:
 | `collectMeta()` | Public | Pull META from Meta contract |
 | `claimMeta()` | Holder | Claim META rewards |
 | `collectFees()` | Public | Pull AERO from Meta contract |
-| `claimFees()` | Holder | Claim AERO fees |
-| `voteEmissions(choice, amount)` | Holder | Vote on Fed emissions |
+| `claimFees()` | Holder | Claim AERO fees (Meta share) |
+| `voteEmissions(choice, amount)` | Holder | Vote on Fed emissions (wei input) |
 | `voteLiquidation(amount)` | Holder | Vote for liquidation |
+| `pendingFees(user)` | View | Preview pending AERO (includes uncollected) |
+| `pendingMeta(user)` | View | Preview pending META (includes uncollected) |
+
+### 13.3 FeeSwapper Functions
+
+| Function | Access | Purpose |
+|----------|--------|---------|
+| `swap()` | Public | Convert all pending non-AERO to AERO |
+| `swapSingle(token)` | Public | Convert single token to AERO |
+| `setRoute(token, routes)` | Owner | Configure swap route |
+| `disableToken(token)` | Owner | Disable token for swapping |
+| `enableToken(token)` | Owner | Re-enable disabled token |
+| `setSplitter(address)` | Owner | Set Splitter callback |
+| `setSlippage(uint256)` | Owner | Set slippage tolerance |
+| `sweepDust(tokens, to)` | Owner | Recover stuck dust |
 
 ---
 
@@ -833,15 +925,16 @@ Remote chains verify Base state via L1 state proofs:
 
 | Contract | Address |
 |----------|---------|
-| VeAeroSplitter | `0x341f394086D6877885fD2cC966904BDFc2620aBf` |
-| VToken (V-AERO) | `0x2B214E99050db935FBF3479E8629B2E3078DF61a` |
-| CToken (C-AERO) | `0x616cCBC180ed0b7C4121f7551DC6C262f749b2cD` |
-| RToken (R-AERO) | `0x0Db78Bb35f58b6A591aCc6bbAEf6dD57C5Ea1908` |
-| Meta | `0xC4Dfb91cc97ef36D171F761ab15EdE9bbc2EE051` |
-| VeAeroLiquidation | `0xad608ecD3b506EB35f706bBb67D817aCe873B8eB` |
-| VeAeroBribes | `0xe3c012c9A8Cd0BafEcd60f72Bb9Cc49662d3FcDB` |
-| VoteLib | `0x2dE16D98569c6CB352F80fc6024F5C86F3Ef47c5` |
-| EmissionsVoteLib | `0x5a301a802B0C4BD5389E3Dc31eeB54cf37c65324` |
+| VeAeroSplitter | `0xC12F5D7ebce4bB34f5D88b49f1dd7d78f210C644` |
+| VToken (V-AERO) | `0x88898d9874bF5c5537DDe4395694abCC6D8Ede52` |
+| CToken (C-AERO) | `0xB2EDF371E436E2F8dF784a1AFe36B6f16c01573D` |
+| RToken (R-AERO) | `0x6A7B717Cbc314D3fe6102cc37d3B064BD3ccA3D8` |
+| Meta | `0x776b081bF1B6482422765381b66865043dbA877D` |
+| VeAeroLiquidation | `0xa3957D4557f71e2C20015D4B17987D1BF62f8e08` |
+| VeAeroBribes | `0x472Fe0ddfA0C0bA6ff4b0c5a4DC2D7f13A646420` |
+| VoteLib | `0xFaCf7D32906150594E634c0D6bf70312235c0a33` |
+| EmissionsVoteLib | `0xA2633aa2f3cBAa9289597A1824355bc28c58804a` |
+| FeeSwapper | `0xa295BC5C11C1B0D49cc242d9fBFD86fE05Dc7cD2` |
 
 ### 14.2 Aerodrome Contracts (External)
 

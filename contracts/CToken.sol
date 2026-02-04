@@ -11,7 +11,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./Interfaces.sol";
 
 /**
- * @title CToken (C-AERO) V.GAMMA
+ * @title CToken (C-AERO) V.DELTA
  * @notice Capital rights token with integrated META distribution
  * 
  * REWARDS:
@@ -157,20 +157,12 @@ contract CToken is ERC20, Ownable, ReentrancyGuard {
     
     function mint(address to, uint256 amount) external onlySplitter {
         _collectPendingFees(); 
-        _collectPendingMeta();
-        _checkpointUser(to);
-        _checkpointUserFee(to);  
+        _collectPendingMeta(); 
         _mint(to, amount);
-        _updateUserDebt(to);
-        _updateUserFeeDebt(to);  
     }
     
     function burn(address from, uint256 amount) external onlySplitter {
-        _checkpointUser(from);
-        _checkpointUserFee(from);  
         _burn(from, amount);
-        _updateUserDebt(from);
-        _updateUserFeeDebt(from);  
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -504,10 +496,6 @@ function _updateUserFeeDebt(address user) internal {
         
         uint256 available = unlockedBalanceOf(msg.sender);
         if (available < amount) revert InsufficientUnlockedBalance();
-        
-        // EFFECTS - Checkpoint META and update debt before transfer
-        _checkpointUser(msg.sender);
-        _updateUserDebt(msg.sender); 
         
         // Transfer to liquidation contract (not splitter)
         _transfer(msg.sender, liquidation, amount);

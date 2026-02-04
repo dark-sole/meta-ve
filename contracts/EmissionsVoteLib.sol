@@ -6,7 +6,7 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
- * @title EmissionsVoteLib V.BETA.1
+ * @title EmissionsVoteLib V.DELTA
  * @notice Tracks C-AERO holder votes on Aerodrome emissions (increase/hold/decrease)
  * @dev Extracted from VeAeroSplitter to reduce contract size
  * 

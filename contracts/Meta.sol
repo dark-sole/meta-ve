@@ -12,7 +12,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./Interfaces.sol";
 
 /**
- * @title Meta V.BETA.1
+ * @title Meta V.DELTA
  * @notice META token with utilization-based emissions, multi-VE support
  * @dev Gas optimized, CEI compliant
  * 

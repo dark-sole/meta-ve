@@ -4,7 +4,7 @@
 pragma solidity ^0.8.24;
 
 /**
- * @title DynamicPoolRegistry V.BETA.1
+ * @title DynamicPoolRegistry V.DELTA
  * @notice Maps Aerodrome pool addresses to indices for bitpacked storage
  * @dev Dynamic sizing based on Aerodrome voter.length()
  *      Indices assigned lazily on first vote

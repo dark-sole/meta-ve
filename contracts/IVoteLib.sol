@@ -4,7 +4,7 @@
 pragma solidity ^0.8.24;
 
 /**
- * @title IVoteLib V.BETA.1
+ * @title IVoteLib V.DELTA
  * @notice Interface for VoteLib multi-NFT vote distribution
  * @dev Add this to Interfaces.sol
  */
