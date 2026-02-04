@@ -1,10 +1,10 @@
 # META-VE Technical Handbook
 
 **Version:** 2.0 (DELTA)  
-**Date:** January 2026  
+**Date:** February 2026  
 **Status:** Production - Mainnet Deployed  
 **Network:** Base Mainnet (Chain ID: 8453)  
-**Deployment Block:** 40,414,704  
+**Deployment Block:** 41,174,642  
 **Source of Truth:** Smart Contract Source Code
 
 ---
@@ -925,16 +925,16 @@ Remote chains verify Base state via L1 state proofs:
 
 | Contract | Address |
 |----------|---------|
-| VeAeroSplitter | `0xC12F5D7ebce4bB34f5D88b49f1dd7d78f210C644` |
-| VToken (V-AERO) | `0x88898d9874bF5c5537DDe4395694abCC6D8Ede52` |
-| CToken (C-AERO) | `0xB2EDF371E436E2F8dF784a1AFe36B6f16c01573D` |
-| RToken (R-AERO) | `0x6A7B717Cbc314D3fe6102cc37d3B064BD3ccA3D8` |
-| Meta | `0x776b081bF1B6482422765381b66865043dbA877D` |
-| VeAeroLiquidation | `0xa3957D4557f71e2C20015D4B17987D1BF62f8e08` |
-| VeAeroBribes | `0x472Fe0ddfA0C0bA6ff4b0c5a4DC2D7f13A646420` |
-| VoteLib | `0xFaCf7D32906150594E634c0D6bf70312235c0a33` |
-| EmissionsVoteLib | `0xA2633aa2f3cBAa9289597A1824355bc28c58804a` |
-| FeeSwapper | `0xa295BC5C11C1B0D49cc242d9fBFD86fE05Dc7cD2` |
+| VeAeroSplitter | `0x72056b6BDfA0E8a3DC5242ebaf37Ce42fb97F4bb` |
+| VToken (V-AERO) | `0x4c53e43C294795D5EB0905E48f7d758852F833c9` |
+| CToken (C-AERO) | `0xa5dF6792A2954151aaeD097795D45B17638c2248` |
+| RToken (R-AERO) | `0x9A3029417505Fb900EF47c544C7d92e981413bA6` |
+| Meta | `0x8110E76892224F2c522C471D09C4157088eA2c27` |
+| VeAeroLiquidation | `0xF3b04597BFC481efdF985b9DCD4091a8E5a166fA` |
+| VeAeroBribes | `0xEb10F2AA34e1CdB0144437fb6FbA20A9dAb65E27` |
+| VoteLib | `0xAE2aEe761D75BBFE27262D87bc73f54A7E6199b1` |
+| EmissionsVoteLib | `0xA336db52655887A4E1bDdA1D60e3E743b25904E1` |
+| FeeSwapper | `0x50b6Fb0aD83f9fCd01a397deB4C0A4CD59eDB2a5` |
 
 ### 14.2 Aerodrome Contracts (External)
 
@@ -958,10 +958,9 @@ Remote chains verify Base state via L1 state proofs:
 
 | Parameter | Value |
 |-----------|-------|
-| Deployment Block | 40,414,704 |
+| Deployment Block | 41,174,642 |
 | Chain ID | 8453 |
-| Genesis Time | 1767571200 (Jan 4, 2026 00:00 UTC) |
-| Deployment TX | `0x1c63aa1f145dda7b45f3ce87c41d5d429fae9184a424c1b2bee737aebc2314a0` |
+| Genesis Time | 1737590400 (Jan 23, 2026 00:00 UTC) |
 
 ---
 

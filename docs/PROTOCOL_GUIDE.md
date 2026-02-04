@@ -2,7 +2,7 @@
 
 **Version:** 2.0 (DELTA)  
 **Network:** Base Mainnet (Chain ID: 8453)  
-**Last Updated:** January 2026
+**Last Updated:** February 2026
 
 A quick reference for interacting with META-VE on Base.
 
@@ -14,13 +14,16 @@ A quick reference for interacting with META-VE on Base.
 
 | Contract | Address | Purpose |
 |----------|---------|---------|
-| **VeAeroSplitter** | `0xC12F5D7ebce4bB34f5D88b49f1dd7d78f210C644` | Deposit veAERO, fee distribution |
-| **V-AERO** (VToken) | `0x88898d9874bF5c5537DDe4395694abCC6D8Ede52` | Gauge voting |
-| **C-AERO** (CToken) | `0xB2EDF371E436E2F8dF784a1AFe36B6f16c01573D` | Fees, META rewards, emissions voting |
-| **R-AERO** (RToken) | `0x6A7B717Cbc314D3fe6102cc37d3B064BD3ccA3D8` | Liquidation receipts |
-| **Meta** | `0x776b081bF1B6482422765381b66865043dbA877D` | META token, emissions |
-| **VeAeroBribes** | `0x472Fe0ddfA0C0bA6ff4b0c5a4DC2D7f13A646420` | Bribe snapshots & claims |
-| **FeeSwapper** | `0xa295BC5C11C1B0D49cc242d9fBFD86fE05Dc7cD2` | Non-AERO fee token conversion |
+| **VeAeroSplitter** | `0x72056b6BDfA0E8a3DC5242ebaf37Ce42fb97F4bb` | Deposit veAERO, fee distribution |
+| **V-AERO** (VToken) | `0x4c53e43C294795D5EB0905E48f7d758852F833c9` | Gauge voting |
+| **C-AERO** (CToken) | `0xa5dF6792A2954151aaeD097795D45B17638c2248` | Fees, META rewards, emissions voting |
+| **R-AERO** (RToken) | `0x9A3029417505Fb900EF47c544C7d92e981413bA6` | Liquidation receipts |
+| **Meta** | `0x8110E76892224F2c522C471D09C4157088eA2c27` | META token, emissions |
+| **VeAeroBribes** | `0xEb10F2AA34e1CdB0144437fb6FbA20A9dAb65E27` | Bribe snapshots & claims |
+| **VeAeroLiquidation** | `0xF3b04597BFC481efdF985b9DCD4091a8E5a166fA` | Liquidation governance |
+| **VoteLib** | `0xAE2aEe761D75BBFE27262D87bc73f54A7E6199b1` | Multi-NFT vote distribution |
+| **EmissionsVoteLib** | `0xA336db52655887A4E1bDdA1D60e3E743b25904E1` | Fed emissions voting |
+| **FeeSwapper** | `0x50b6Fb0aD83f9fCd01a397deB4C0A4CD59eDB2a5` | Non-AERO fee token conversion |
 
 ### Aerodrome Contracts
 
@@ -51,12 +54,12 @@ Convert your veAERO NFT into liquid V-AERO and C-AERO tokens.
 ```solidity
 // Step 1: Approve
 VotingEscrow(0xeBf418Fe2512e7E6bd9b87a8F0f294aCDC67e6B4).approve(
-    0xC12F5D7ebce4bB34f5D88b49f1dd7d78f210C644,  // Splitter
+    0x72056b6BDfA0E8a3DC5242ebaf37Ce42fb97F4bb,  // Splitter
     tokenId
 );
 
 // Step 2: Deposit
-VeAeroSplitter(0xC12F5D7ebce4bB34f5D88b49f1dd7d78f210C644).depositVeAero(tokenId);
+VeAeroSplitter(0x72056b6BDfA0E8a3DC5242ebaf37Ce42fb97F4bb).depositVeAero(tokenId);
 ```
 
 **Window:** Thursday 00:01 UTC → Wednesday 21:44 UTC
@@ -69,7 +72,7 @@ Direct Aerodrome gauge emissions with your V-AERO.
 
 ### Active Vote (specific gauge)
 ```solidity
-VToken(0x88898d9874bF5c5537DDe4395694abCC6D8Ede52).vote(
+VToken(0x4c53e43C294795D5EB0905E48f7d758852F833c9).vote(
     gaugeAddress,  // Pool to vote for
     amount         // V-AERO amount in wei (e.g., 100e18 for 100 tokens)
 );
@@ -77,7 +80,7 @@ VToken(0x88898d9874bF5c5537DDe4395694abCC6D8Ede52).vote(
 
 ### Passive Vote (follows active voters)
 ```solidity
-VToken(0x88898d9874bF5c5537DDe4395694abCC6D8Ede52).votePassive(amount);
+VToken(0x4c53e43C294795D5EB0905E48f7d758852F833c9).votePassive(amount);
 ```
 
 **Important:**
@@ -94,7 +97,7 @@ C-AERO holders earn multiple reward streams.
 ### Trading Fees — Splitter Direct (50% of AERO)
 
 ```solidity
-VeAeroSplitter splitter = VeAeroSplitter(0xC12F5D7ebce4bB34f5D88b49f1dd7d78f210C644);
+VeAeroSplitter splitter = VeAeroSplitter(0x72056b6BDfA0E8a3DC5242ebaf37Ce42fb97F4bb);
 
 // Claim your share of direct fee distribution
 splitter.claimFees();
@@ -103,7 +106,7 @@ splitter.claimFees();
 ### Trading Fees — Via Meta (remaining share)
 
 ```solidity
-CToken cToken = CToken(0xB2EDF371E436E2F8dF784a1AFe36B6f16c01573D);
+CToken cToken = CToken(0xa5dF6792A2954151aaeD097795D45B17638c2248);
 
 // Check pending
 uint256 pending = cToken.pendingFees(yourAddress);
@@ -122,7 +125,7 @@ cToken.claimFees();
 ### META Rewards
 
 ```solidity
-CToken cToken = CToken(0xB2EDF371E436E2F8dF784a1AFe36B6f16c01573D);
+CToken cToken = CToken(0xa5dF6792A2954151aaeD097795D45B17638c2248);
 
 // Check pending
 uint256 pending = cToken.pendingMeta(yourAddress);
@@ -137,7 +140,7 @@ cToken.claimMeta();
 ### Rebase (V+C token growth)
 
 ```solidity
-VeAeroSplitter splitter = VeAeroSplitter(0xC12F5D7ebce4bB34f5D88b49f1dd7d78f210C644);
+VeAeroSplitter splitter = VeAeroSplitter(0x72056b6BDfA0E8a3DC5242ebaf37Ce42fb97F4bb);
 
 // Claim rebase (mints new V-AERO and C-AERO)
 splitter.claimRebase();
@@ -150,7 +153,7 @@ splitter.claimRebase();
 C-AERO holders vote on Aerodrome's Fed emissions rate.
 
 ```solidity
-CToken(0xB2EDF371E436E2F8dF784a1AFe36B6f16c01573D).voteEmissions(
+CToken(0xa5dF6792A2954151aaeD097795D45B17638c2248).voteEmissions(
     choice,  // -1 (decrease), 0 (hold), +1 (increase)
     amount   // C-AERO amount in wei (must be whole token multiples, e.g., 100e18)
 );
@@ -168,18 +171,18 @@ Bribes are distributed to V-AERO voters based on epoch snapshots.
 
 ### Step 1: Vote (during epoch N)
 ```solidity
-VToken(0x88898d9874bF5c5537DDe4395694abCC6D8Ede52).vote(gauge, amount);
+VToken(0x4c53e43C294795D5EB0905E48f7d758852F833c9).vote(gauge, amount);
 ```
 
 ### Step 2: Snapshot (after voting ends)
 ```solidity
 // Call between Wednesday 22:00 - Thursday 00:00 UTC
-VeAeroBribes(0x472Fe0ddfA0C0bA6ff4b0c5a4DC2D7f13A646420).snapshotForBribes();
+VeAeroBribes(0xEb10F2AA34e1CdB0144437fb6FbA20A9dAb65E27).snapshotForBribes();
 ```
 
 ### Step 3: Claim (during epoch N+1)
 ```solidity
-VeAeroBribes(0x472Fe0ddfA0C0bA6ff4b0c5a4DC2D7f13A646420).claimBribes(tokenAddresses);
+VeAeroBribes(0xEb10F2AA34e1CdB0144437fb6FbA20A9dAb65E27).claimBribes(tokenAddresses);
 ```
 
 > ⚠️ **Deadline:** You must claim bribes before **Wednesday 23:00 UTC**. After this time, unclaimed bribes may be swept by Tokenisys.
@@ -192,22 +195,22 @@ Liquidation requires dual supermajority consent (75% C-AERO + 50% V-AERO) and ta
 
 ### C-AERO Holders: Vote for Liquidation
 ```solidity
-CToken(0xB2EDF371E436E2F8dF784a1AFe36B6f16c01573D).voteLiquidation(amount);
+CToken(0xa5dF6792A2954151aaeD097795D45B17638c2248).voteLiquidation(amount);
 ```
 
 ### V-AERO Holders: Confirm Liquidation
 ```solidity
-VToken(0x88898d9874bF5c5537DDe4395694abCC6D8Ede52).confirmLiquidation(amount);
+VToken(0x4c53e43C294795D5EB0905E48f7d758852F833c9).confirmLiquidation(amount);
 ```
 
 ### After Approval: Claim R-AERO
 ```solidity
-VeAeroSplitter(0xC12F5D7ebce4bB34f5D88b49f1dd7d78f210C644).claimRTokens();
+VeAeroSplitter(0x72056b6BDfA0E8a3DC5242ebaf37Ce42fb97F4bb).claimRTokens();
 ```
 
 ### If Liquidation Fails: Withdraw
 ```solidity
-VeAeroLiquidation(0xa3957D4557f71e2C20015D4B17987D1BF62f8e08).withdrawFailedLiquidation();
+VeAeroLiquidation(0xF3b04597BFC481efdF985b9DCD4091a8E5a166fA).withdrawFailedLiquidation();
 ```
 
 ---
@@ -260,27 +263,27 @@ VeAeroLiquidation(0xa3957D4557f71e2C20015D4B17987D1BF62f8e08).withdrawFailedLiqu
 
 ### Check Your Balances
 ```solidity
-VToken(0x88898d9874bF5c5537DDe4395694abCC6D8Ede52).balanceOf(yourAddress);
-CToken(0xB2EDF371E436E2F8dF784a1AFe36B6f16c01573D).balanceOf(yourAddress);
+VToken(0x4c53e43C294795D5EB0905E48f7d758852F833c9).balanceOf(yourAddress);
+CToken(0xa5dF6792A2954151aaeD097795D45B17638c2248).balanceOf(yourAddress);
 ```
 
 ### Check Pending Rewards
 ```solidity
-CToken cToken = CToken(0xB2EDF371E436E2F8dF784a1AFe36B6f16c01573D);
+CToken cToken = CToken(0xa5dF6792A2954151aaeD097795D45B17638c2248);
 cToken.pendingFees(yourAddress);   // Pending AERO fees (CToken path)
 cToken.pendingMeta(yourAddress);   // Pending META rewards
 ```
 
 ### Check Bribe Eligibility
 ```solidity
-VeAeroBribes bribes = VeAeroBribes(0x472Fe0ddfA0C0bA6ff4b0c5a4DC2D7f13A646420);
+VeAeroBribes bribes = VeAeroBribes(0xEb10F2AA34e1CdB0144437fb6FbA20A9dAb65E27);
 bribes.snapshotVotePower(yourAddress);      // Your snapshot power
 bribes.pendingBribes(yourAddress, token);   // Pending for specific token
 ```
 
 ### Check Epoch Info
 ```solidity
-VeAeroSplitter splitter = VeAeroSplitter(0xC12F5D7ebce4bB34f5D88b49f1dd7d78f210C644);
+VeAeroSplitter splitter = VeAeroSplitter(0x72056b6BDfA0E8a3DC5242ebaf37Ce42fb97F4bb);
 splitter.currentEpoch();
 splitter.epochEndTime();
 splitter.votingStartTime();
@@ -305,7 +308,7 @@ splitter.votingEndTime();
 
 ## Links
 
-- **Basescan:** [VeAeroSplitter](https://basescan.org/address/0xC12F5D7ebce4bB34f5D88b49f1dd7d78f210C644)
+- **Basescan:** [VeAeroSplitter](https://basescan.org/address/0x72056b6BDfA0E8a3DC5242ebaf37Ce42fb97F4bb)
 - **Technical Handbook:** [TECHNICAL_HANDBOOK.md](TECHNICAL_HANDBOOK.md)
 - **Test Results:** [TEST_RESULTS.md](TEST_RESULTS.md)
 
